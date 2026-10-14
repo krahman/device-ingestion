@@ -1,14 +1,36 @@
 # Device ingestion
 
-The service accepts telemetry over HTTP (`:8080`) and gRPC (`:50051`), writes
-records to Kafka topic `device.telemetry`, and processes them with a Kafka
-consumer group. An ingestion request is accepted after Kafka acknowledges the
-write. Consumer offsets are committed only after the database write succeeds.
+The service accepts telemetry over HTTP (`:8080`) and gRPC (`:50051`), validates
+the packet, and publishes it to Kafka topic `device.telemetry`. It acknowledges
+an ingestion request only after Kafka confirms the write. Consumer offsets are
+committed only after the database write succeeds. Validation rejects missing or
+oversized device IDs, non-finite measurements, and negative measurements before
+publishing.
 
-The example database writer is a stub. Replace `saveToDatabase` with a bounded,
-idempotent database operation before production use. Records with invalid JSON
+The example database writer is a stub. Replace it with a bounded, idempotent
+database operation before production use. Records with invalid JSON
 are written to `device.telemetry.dlq`; offsets are committed only after the
 dead-letter write succeeds.
+
+## Architecture
+
+The project follows ports and adapters (Hexagonal Architecture):
+
+- `internal/domain` contains telemetry types without infrastructure dependencies.
+- `internal/application` contains ingestion and processing use cases plus the
+  publisher and repository ports they need.
+- `internal/adapters/httpapi` and `internal/adapters/grpcapi` translate inbound
+  requests into application calls.
+- `internal/adapters/kafka` implements the publisher port and runs Kafka
+  consumers.
+- `internal/adapters/persistence/stub` implements the repository port for the
+  example. Replace this adapter with a real database implementation.
+- `app` is the composition root: it selects adapters, connects them to the
+  application, and manages server startup and shutdown.
+- `cmd/server` loads configuration and starts the app.
+
+Dependencies point inward: adapters depend on application and domain packages;
+the domain has no dependencies on transports, Kafka, or persistence.
 
 ## Kafka setup
 
@@ -53,10 +75,14 @@ make vendor
 KAFKA_BROKERS=localhost:9092 KAFKA_DB_WORKERS=4 make run
 ```
 
-Set `KAFKA_DB_WORKERS` to control the number of consumer group members. Keep it
-at or below the number of input topic partitions for useful parallelism. The
-single-node Docker broker is for local development; production should use a
-replicated Kafka cluster.
+Set `KAFKA_DB_WORKERS` to control the number of consumer group members. It must
+be between 1 and 32, and should not exceed the input topic partition count for
+useful parallelism. Each worker processes one message at a time; the Kafka
+reader queue holds at most one additional message, and each broker fetch is
+limited to 1 MiB. This caps concurrent repository calls at the worker count
+and keeps the in-memory backlog bounded while Kafka retains remaining records
+during slowdowns. The single-node Docker broker is for local development;
+production should use a replicated Kafka cluster.
 
 ## Send test telemetry
 

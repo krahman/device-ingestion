@@ -46,4 +46,4 @@ kafka-topics: ## Create local telemetry and dead-letter topics
 	docker exec $(KAFKA_CONTAINER) /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic device.telemetry.dlq --partitions 1 --replication-factor 1
 
 fmt: ## Format project Go source files
-	find cmd internal proto -name '*.go' -print0 | xargs -0 gofmt -w
+	find app cmd internal proto -name '*.go' -print0 | xargs -0 gofmt -w
