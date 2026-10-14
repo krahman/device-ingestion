@@ -3,20 +3,19 @@ package ingestion
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
 	"device-ingestion/internal/models"
-
-	"github.com/nats-io/nats.go"
 )
 
 type Handler struct {
-	nc *nats.Conn
+	publisher Publisher
 }
 
-func NewHandler(nc *nats.Conn) *Handler {
-	return &Handler{nc: nc}
+func NewHandler(publisher Publisher) *Handler {
+	return &Handler{publisher: publisher}
 }
 
 func (h *Handler) HandleTelemetry(w http.ResponseWriter, r *http.Request) {
@@ -29,7 +28,12 @@ func (h *Handler) HandleTelemetry(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var packet models.TelemetryPacket
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(&packet); err != nil {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+			http.Error(w, "Payload too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "Invalid payload", http.StatusBadRequest)
 		return
 	}
@@ -47,17 +51,13 @@ func (h *Handler) HandleTelemetry(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Request timeout", http.StatusGatewayTimeout)
 		return
 	default:
-		if err := h.nc.Publish("device.telemetry", data); err != nil {
+		if err := h.publisher.Publish(ctx, TelemetryTopic, packet.DeviceID, data); err != nil {
 			http.Error(w, "Failed to queue telemetry", http.StatusServiceUnavailable)
 			return
 		}
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	write, err := w.Write([]byte(`{"status":"queued"}`))
-	if err != nil {
-		return
-	}
-
-	w.WriteHeader(write)
+	_, _ = w.Write([]byte(`{"status":"queued"}`))
 }

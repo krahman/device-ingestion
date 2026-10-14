@@ -3,22 +3,22 @@ package ingestion
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"time"
 
 	"device-ingestion/internal/models"
 	pb "device-ingestion/proto"
 
-	"github.com/nats-io/nats.go"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type GRPCServer struct {
 	pb.UnimplementedIngestionServiceServer
-	nc *nats.Conn
+	publisher Publisher
 }
 
-func NewGRPCServer(nc *nats.Conn) *GRPCServer {
-	return &GRPCServer{nc: nc}
+func NewGRPCServer(publisher Publisher) *GRPCServer {
+	return &GRPCServer{publisher: publisher}
 }
 
 func (s *GRPCServer) IngestTelemetry(ctx context.Context, req *pb.TelemetryRequest) (*pb.TelemetryResponse, error) {
@@ -36,25 +36,17 @@ func (s *GRPCServer) IngestTelemetry(ctx context.Context, req *pb.TelemetryReque
 
 	data, err := json.Marshal(packet)
 	if err != nil {
-		return nil, statusError("Internal serialization error")
+		return nil, status.Error(codes.Internal, "internal serialization error")
 	}
 
 	select {
 	case <-tCtx.Done():
-		return nil, statusError("Request timeout")
+		return nil, status.Error(codes.DeadlineExceeded, "request timeout")
 	default:
-		if err := s.nc.Publish("device.telemetry", data); err != nil {
-			return nil, statusError("Failed to queue telemetry")
+		if err := s.publisher.Publish(tCtx, TelemetryTopic, packet.DeviceID, data); err != nil {
+			return nil, status.Error(codes.Unavailable, "failed to queue telemetry")
 		}
 	}
 
 	return &pb.TelemetryResponse{Status: "queued"}, nil
-}
-
-func statusError(msg string) error {
-	return grpcError(msg)
-}
-
-func grpcError(msg string) error {
-	return errors.New(msg)
 }

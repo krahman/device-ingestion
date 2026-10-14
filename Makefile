@@ -1,9 +1,10 @@
 GO ?= go
 PROTOC ?= protoc
 PROTO_FILE := proto/telemetry.proto
-NATS_CONTAINER := device-ingestion-nats
+KAFKA_CONTAINER := device-ingestion-kafka
+KAFKA_IMAGE ?= apache/kafka:4.3.1
 
-.PHONY: help install-tools install-protoc-macos generate tidy vendor build run nats-up nats-down fmt
+.PHONY: help install-tools install-protoc-macos generate tidy vendor build run kafka-up kafka-down kafka-topics fmt
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -31,14 +32,18 @@ vendor: ## Refresh vendored Go dependencies
 build: ## Build all packages using vendored dependencies
 	$(GO) build -mod=vendor ./...
 
-run: ## Run the ingestion server (requires NATS at localhost:4222)
+run: ## Run with Kafka at localhost:9092
 	$(GO) run -mod=vendor ./cmd/server
 
-nats-up: ## Start a local NATS server in Docker on port 4222
-	docker run -d --name $(NATS_CONTAINER) -p 4222:4222 nats:2
+kafka-up: ## Start a local single-node Kafka broker in Docker
+	docker run -d --name $(KAFKA_CONTAINER) -p 9092:9092 $(KAFKA_IMAGE)
 
-nats-down: ## Stop and remove the local NATS Docker container
-	-docker rm -f $(NATS_CONTAINER)
+kafka-down: ## Stop and remove the local Kafka container
+	-docker rm -f $(KAFKA_CONTAINER)
+
+kafka-topics: ## Create local telemetry and dead-letter topics
+	docker exec $(KAFKA_CONTAINER) /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic device.telemetry --partitions 4 --replication-factor 1
+	docker exec $(KAFKA_CONTAINER) /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic device.telemetry.dlq --partitions 1 --replication-factor 1
 
 fmt: ## Format project Go source files
 	find cmd internal proto -name '*.go' -print0 | xargs -0 gofmt -w
