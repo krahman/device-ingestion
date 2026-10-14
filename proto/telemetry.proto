@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package ingestion;
+
+option go_package = "device-ingestion/proto";
+
+message TelemetryRequest {
+  string device_id = 1;
+  double voltage = 2;
+  double current = 3;
+  double power_kw = 4;
+}
+
+message TelemetryResponse {
+  string status = 1;
+}
+
+service IngestionService {
+  rpc IngestTelemetry (TelemetryRequest) returns (TelemetryResponse);
+}
