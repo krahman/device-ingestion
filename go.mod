@@ -3,6 +3,7 @@ module device-ingestion
 go 1.27
 
 require (
+	github.com/lib/pq v1.10.9
 	github.com/segmentio/kafka-go v0.4.47
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.11

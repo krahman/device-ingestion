@@ -22,13 +22,14 @@ const (
 )
 
 type TelemetryRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DeviceId      string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
-	Voltage       float64                `protobuf:"fixed64,2,opt,name=voltage,proto3" json:"voltage,omitempty"`
-	Current       float64                `protobuf:"fixed64,3,opt,name=current,proto3" json:"current,omitempty"`
-	PowerKw       float64                `protobuf:"fixed64,4,opt,name=power_kw,json=powerKw,proto3" json:"power_kw,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	DeviceId       string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	Voltage        float64                `protobuf:"fixed64,2,opt,name=voltage,proto3" json:"voltage,omitempty"`
+	Current        float64                `protobuf:"fixed64,3,opt,name=current,proto3" json:"current,omitempty"`
+	PowerKw        float64                `protobuf:"fixed64,4,opt,name=power_kw,json=powerKw,proto3" json:"power_kw,omitempty"`
+	IdempotencyKey string                 `protobuf:"bytes,5,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *TelemetryRequest) Reset() {
@@ -89,6 +90,13 @@ func (x *TelemetryRequest) GetPowerKw() float64 {
 	return 0
 }
 
+func (x *TelemetryRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
 type TelemetryResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
@@ -137,12 +145,13 @@ var File_proto_telemetry_proto protoreflect.FileDescriptor
 
 const file_proto_telemetry_proto_rawDesc = "" +
 	"\n" +
-	"\x15proto/telemetry.proto\x12\tingestion\"~\n" +
+	"\x15proto/telemetry.proto\x12\tingestion\"\xa7\x01\n" +
 	"\x10TelemetryRequest\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x18\n" +
 	"\avoltage\x18\x02 \x01(\x01R\avoltage\x12\x18\n" +
 	"\acurrent\x18\x03 \x01(\x01R\acurrent\x12\x19\n" +
-	"\bpower_kw\x18\x04 \x01(\x01R\apowerKw\"+\n" +
+	"\bpower_kw\x18\x04 \x01(\x01R\apowerKw\x12'\n" +
+	"\x0fidempotency_key\x18\x05 \x01(\tR\x0eidempotencyKey\"+\n" +
 	"\x11TelemetryResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status2`\n" +
 	"\x10IngestionService\x12L\n" +

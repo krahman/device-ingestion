@@ -9,6 +9,7 @@ message TelemetryRequest {
   double voltage = 2;
   double current = 3;
   double power_kw = 4;
+  string idempotency_key = 5;
 }
 
 message TelemetryResponse {

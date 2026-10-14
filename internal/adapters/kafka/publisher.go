@@ -4,20 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
 	"device-ingestion/internal/domain"
+	"device-ingestion/internal/observability"
 
 	kafkago "github.com/segmentio/kafka-go"
 )
 
+const TelemetryTopic = "device.telemetry"
+
 type Publisher struct {
-	writer *kafkago.Writer
-	topic  string
+	writer  *kafkago.Writer
+	topic   string
+	metrics *observability.Metrics
 }
 
-func NewPublisher(brokers []string, topic string) (*Publisher, error) {
+func NewPublisher(brokers []string, topic string, metrics *observability.Metrics) (*Publisher, error) {
 	addresses, err := normalizeBrokers(brokers)
 	if err != nil {
 		return nil, err
@@ -31,7 +36,7 @@ func NewPublisher(brokers []string, topic string) (*Publisher, error) {
 			BatchTimeout: 10 * time.Millisecond,
 			RequiredAcks: kafkago.RequireAll,
 		},
-		topic: topic,
+		topic: topic, metrics: metrics,
 	}, nil
 }
 
@@ -49,15 +54,28 @@ func normalizeBrokers(brokers []string) ([]string, error) {
 }
 
 func (p *Publisher) PublishTelemetry(ctx context.Context, packet domain.TelemetryPacket) error {
+	started := time.Now()
+	result := "success"
+	defer func() {
+		p.metrics.AddCounter("device_ingestion_kafka_published_total", map[string]string{"result": result}, 1)
+		p.metrics.Observe("device_ingestion_kafka_publish_duration_seconds", nil, time.Since(started))
+	}()
 	data, err := json.Marshal(packet)
 	if err != nil {
+		result = "error"
+		slog.Error("failed to encode telemetry for Kafka", "device_id", packet.DeviceID, "error", err)
 		return err
 	}
-	return p.writer.WriteMessages(ctx, kafkago.Message{
+	err = p.writer.WriteMessages(ctx, kafkago.Message{
 		Topic: p.topic,
 		Key:   []byte(packet.DeviceID),
 		Value: data,
 	})
+	if err != nil {
+		result = "error"
+		slog.Error("Kafka publish failed", "topic", p.topic, "device_id", packet.DeviceID, "error", err)
+	}
+	return err
 }
 
 func (p *Publisher) Close() error {

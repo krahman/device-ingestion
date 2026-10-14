@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"strconv"
 	"sync"
 	"time"
 
 	"device-ingestion/internal/domain"
+	"device-ingestion/internal/observability"
 
 	kafkago "github.com/segmentio/kafka-go"
 )
@@ -28,32 +29,34 @@ type WorkerPool struct {
 	deadLetter *kafkago.Writer
 	topic      string
 	processor  telemetryProcessor
+	metrics    *observability.Metrics
 	wg         sync.WaitGroup
 }
 
-func NewWorkerPool(brokers []string, topic, groupID string, workerCount int, processor telemetryProcessor) (*WorkerPool, error) {
+func NewWorkerPool(brokers []string, topic, groupID string, workerCount int, processor telemetryProcessor, metrics *observability.Metrics) (*WorkerPool, error) {
 	addresses, err := normalizeBrokers(brokers)
 	if err != nil {
 		return nil, err
 	}
 	if workerCount < 1 {
-		return nil, errors.New("Kafka worker count must be at least 1")
+		return nil, errors.New("kafka worker count must be at least 1")
 	}
 	if workerCount > maxWorkerCount {
-		return nil, errors.New("Kafka worker count cannot exceed 32")
+		return nil, errors.New("kafka worker count cannot exceed 32")
 	}
 
 	pool := &WorkerPool{
 		readers:   make([]*kafkago.Reader, 0, workerCount),
 		topic:     topic,
 		processor: processor,
+		metrics:   metrics,
 		deadLetter: &kafkago.Writer{
 			Addr:         kafkago.TCP(addresses...),
 			Balancer:     &kafkago.Hash{},
 			RequiredAcks: kafkago.RequireAll,
 		},
 	}
-	for i := 0; i < workerCount; i++ {
+	for range workerCount {
 		pool.readers = append(pool.readers, kafkago.NewReader(kafkago.ReaderConfig{
 			Brokers:       addresses,
 			Topic:         topic,
@@ -83,7 +86,8 @@ func (p *WorkerPool) consume(ctx context.Context, reader *kafkago.Reader) {
 			if errors.Is(err, context.Canceled) {
 				return
 			}
-			log.Printf("Kafka worker fetch failed; retrying: %v", err)
+			p.metrics.AddCounter("device_ingestion_kafka_worker_errors_total", map[string]string{"stage": "fetch"}, 1)
+			slog.Error("Kafka worker fetch failed; retrying", "error", err)
 			if !waitForRetry(ctx) {
 				return
 			}
@@ -92,23 +96,28 @@ func (p *WorkerPool) consume(ctx context.Context, reader *kafkago.Reader) {
 
 		var packet domain.TelemetryPacket
 		if err := json.Unmarshal(message.Value, &packet); err != nil {
-			for {
-				if writeErr := p.writeDeadLetter(ctx, message, err); writeErr == nil {
-					break
-				} else {
-					log.Printf("Failed to write telemetry to dead-letter topic: %v", writeErr)
-				}
-				if !waitForRetry(ctx) {
-					return
-				}
+			if !p.writeDeadLetterWithRetry(ctx, message, err) {
+				return
 			}
 		} else {
 			for {
-				if err := p.processor.Execute(ctx, packet); err == nil {
+				started := time.Now()
+				err := p.processor.Execute(ctx, packet)
+				p.metrics.Observe("device_ingestion_telemetry_processing_duration_seconds", nil, time.Since(started))
+				if err == nil {
+					p.metrics.AddCounter("device_ingestion_kafka_processed_total", map[string]string{"result": "success"}, 1)
 					break
-				} else {
-					log.Printf("Telemetry processing failed for device %s: %v", packet.DeviceID, err)
 				}
+				var validationErr *domain.ValidationError
+				var idempotencyErr *domain.IdempotencyConflictError
+				if errors.As(err, &validationErr) || errors.As(err, &idempotencyErr) {
+					if !p.writeDeadLetterWithRetry(ctx, message, err) {
+						return
+					}
+					break
+				}
+				p.metrics.AddCounter("device_ingestion_kafka_processed_total", map[string]string{"result": "retry"}, 1)
+				slog.Error("telemetry processing failed; retrying without committing offset", "device_id", packet.DeviceID, "topic", message.Topic, "partition", message.Partition, "offset", message.Offset, "error", err)
 				if !waitForRetry(ctx) {
 					return
 				}
@@ -116,8 +125,24 @@ func (p *WorkerPool) consume(ctx context.Context, reader *kafkago.Reader) {
 		}
 
 		if err := reader.CommitMessages(ctx, message); err != nil {
-			log.Printf("Failed to commit Kafka offset %s[%d] %d: %v", message.Topic, message.Partition, message.Offset, err)
+			p.metrics.AddCounter("device_ingestion_kafka_worker_errors_total", map[string]string{"stage": "offset_commit"}, 1)
+			slog.Error("Kafka offset commit failed", "topic", message.Topic, "partition", message.Partition, "offset", message.Offset, "error", err)
 			return
+		}
+	}
+}
+
+func (p *WorkerPool) writeDeadLetterWithRetry(ctx context.Context, message kafkago.Message, cause error) bool {
+	for {
+		if err := p.writeDeadLetter(ctx, message, cause); err == nil {
+			p.metrics.AddCounter("device_ingestion_kafka_dlq_total", nil, 1)
+			return true
+		} else {
+			p.metrics.AddCounter("device_ingestion_kafka_worker_errors_total", map[string]string{"stage": "dlq_write"}, 1)
+			slog.Error("dead-letter write failed; retrying", "topic", message.Topic, "partition", message.Partition, "offset", message.Offset, "error", err)
+		}
+		if !waitForRetry(ctx) {
+			return false
 		}
 	}
 }

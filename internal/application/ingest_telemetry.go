@@ -19,6 +19,7 @@ func NewIngestTelemetry(publisher TelemetryPublisher) *IngestTelemetry {
 
 func (u *IngestTelemetry) Execute(ctx context.Context, packet domain.TelemetryPacket) error {
 	packet.DeviceID = strings.TrimSpace(packet.DeviceID)
+	packet.IdempotencyKey = strings.TrimSpace(packet.IdempotencyKey)
 	if err := packet.Validate(); err != nil {
 		return err
 	}
