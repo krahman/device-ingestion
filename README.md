@@ -171,6 +171,36 @@ Run a repair pass manually or schedule it with your job runner:
 make reconcile
 ```
 
+## Profiling with pprof
+
+The service exposes Go's pprof handlers on a separate listener at
+`127.0.0.1:6060` by default. Keep this listener on loopback unless access is
+restricted by your network environment. Set `PPROF_ADDRESS` to change it; for
+example, use `:6060` in a container and publish or forward that port only to a
+trusted local machine.
+
+With the service running, collect a 30-second CPU profile and inspect the
+highest-cost functions:
+
+```sh
+go tool pprof -top 'http://localhost:6060/debug/pprof/profile?seconds=30'
+```
+
+Inspect current heap allocations:
+
+```sh
+go tool pprof -top http://localhost:6060/debug/pprof/heap
+```
+
+List goroutine stacks:
+
+```sh
+curl -s 'http://localhost:6060/debug/pprof/goroutine?debug=2' | less
+```
+
+For interactive exploration, omit `-top` from the `go tool pprof` command.
+Available profiles are listed at `http://localhost:6060/debug/pprof/`.
+
 ## Send test telemetry
 
 Send a packet over HTTP:
