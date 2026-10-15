@@ -1,0 +1,99 @@
+services:
+  kafka:
+    image: apache/kafka:4.3.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    ports:
+      - "9092:9094"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: device_ingestion
+      POSTGRES_PASSWORD: device_ingestion
+      POSTGRES_DB: device_ingestion
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U device_ingestion -d device_ingestion"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  kafka-topics:
+    image: apache/kafka:4.3.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for definition in 'device.telemetry 4' 'device.telemetry.dlq 1' 'charging.events 4' 'charging.events.dlq 1'; do
+          set -- $$definition
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic "$$1" --partitions "$$2" --replication-factor 1
+        done
+
+  migrate:
+    build: .
+    entrypoint: ["/usr/local/bin/migrate"]
+    environment:
+      DATABASE_URL: postgres://device_ingestion:device_ingestion@postgres:5432/device_ingestion?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build: .
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      DATABASE_URL: postgres://device_ingestion:device_ingestion@postgres:5432/device_ingestion?sslmode=disable
+      KAFKA_DB_WORKERS: ${KAFKA_DB_WORKERS:-4}
+      DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-4}
+      HTTP_ADDRESS: :8080
+      GRPC_ADDRESS: :50051
+      OCPP_ADDRESS: :8081
+      OCPP_STATIONS: ${OCPP_STATIONS:-}
+      OCPI_CPO_COUNTRY_CODE: ${OCPI_CPO_COUNTRY_CODE:-}
+      OCPI_CPO_PARTY_ID: ${OCPI_CPO_PARTY_ID:-}
+      OCPI_BASE_URL: ${OCPI_BASE_URL:-http://localhost:8080}
+      OCPI_EMSP_PARTNERS: ${OCPI_EMSP_PARTNERS:-}
+      PPROF_ADDRESS: 127.0.0.1:6060
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+      - "50051:50051"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-topics:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+    name: device-ingestion-postgres-data

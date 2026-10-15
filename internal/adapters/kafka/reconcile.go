@@ -30,6 +30,44 @@ type partitionWindow struct {
 // telemetry processor. It does not change the production consumer group's
 // committed offsets.
 func ReplayTopic(ctx context.Context, brokers []string, topic string, workerCount int, processor telemetryProcessor) (ReconcileStats, error) {
+	return replayTopic(ctx, brokers, topic, workerCount, func(ctx context.Context, data []byte) (bool, error) {
+		var packet domain.TelemetryPacket
+		if err := json.Unmarshal(data, &packet); err != nil {
+			return true, nil
+		}
+		if err := processor.Execute(ctx, packet); err != nil {
+			var validationErr *domain.ValidationError
+			var idempotencyErr *domain.IdempotencyConflictError
+			if errors.As(err, &validationErr) || errors.As(err, &idempotencyErr) {
+				return true, nil
+			}
+			return false, err
+		}
+		return false, nil
+	})
+}
+
+// ReplayChargingEvents replays normalized charging events without changing
+// the live charging consumer group's committed offsets.
+func ReplayChargingEvents(ctx context.Context, brokers []string, workerCount int, processor chargingEventProcessor) (ReconcileStats, error) {
+	return replayTopic(ctx, brokers, ChargingEventsTopic, workerCount, func(ctx context.Context, data []byte) (bool, error) {
+		var event domain.ChargingEvent
+		if err := json.Unmarshal(data, &event); err != nil {
+			return true, nil
+		}
+		if err := processor.Execute(ctx, event); err != nil {
+			var validationErr *domain.ValidationError
+			var conflictErr *domain.ChargingEventConflictError
+			if errors.As(err, &validationErr) || errors.As(err, &conflictErr) {
+				return true, nil
+			}
+			return false, err
+		}
+		return false, nil
+	})
+}
+
+func replayTopic(ctx context.Context, brokers []string, topic string, workerCount int, process func(context.Context, []byte) (bool, error)) (ReconcileStats, error) {
 	var stats ReconcileStats
 	if workerCount < 1 || workerCount > maxReconcileWorkers {
 		return stats, fmt.Errorf("reconciliation worker count must be between 1 and %d", maxReconcileWorkers)
@@ -109,7 +147,7 @@ func ReplayTopic(ctx context.Context, brokers []string, topic string, workerCoun
 		go func() {
 			defer workers.Done()
 			for window := range jobs {
-				count, skippedCount, err := replayPartition(replayCtx, addresses, topic, window, processor)
+				count, skippedCount, err := replayPartition(replayCtx, addresses, topic, window, process)
 				replayed.Add(count)
 				skipped.Add(skippedCount)
 				if err != nil {
@@ -143,7 +181,7 @@ enqueue:
 	return stats, errors.Join(replayErrors...)
 }
 
-func replayPartition(ctx context.Context, brokers []string, topic string, window partitionWindow, processor telemetryProcessor) (int64, int64, error) {
+func replayPartition(ctx context.Context, brokers []string, topic string, window partitionWindow, process func(context.Context, []byte) (bool, error)) (int64, int64, error) {
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers:        brokers,
 		Topic:          topic,
@@ -167,20 +205,14 @@ func replayPartition(ctx context.Context, brokers []string, topic string, window
 		if message.Offset >= window.end {
 			return replayed, skipped, nil
 		}
-		var packet domain.TelemetryPacket
-		if err := json.Unmarshal(message.Value, &packet); err != nil {
-			skipped++
-			continue
-		}
-		if err := processor.Execute(ctx, packet); err != nil {
-			var validationErr *domain.ValidationError
-			var idempotencyErr *domain.IdempotencyConflictError
-			if errors.As(err, &validationErr) || errors.As(err, &idempotencyErr) {
-				skipped++
-				continue
-			}
+		wasSkipped, err := process(ctx, message.Value)
+		if err != nil {
 			return replayed, skipped, fmt.Errorf("persist offset %d: %w", message.Offset, err)
 		}
-		replayed++
+		if wasSkipped {
+			skipped++
+		} else {
+			replayed++
+		}
 	}
 }

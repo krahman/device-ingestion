@@ -12,6 +12,8 @@ import (
 	"device-ingestion/internal/adapters/grpcapi"
 	"device-ingestion/internal/adapters/httpapi"
 	kafkaadapter "device-ingestion/internal/adapters/kafka"
+	"device-ingestion/internal/adapters/ocpiapi"
+	"device-ingestion/internal/adapters/ocppapi"
 	"device-ingestion/internal/adapters/persistence/postgres"
 	"device-ingestion/internal/application"
 	"device-ingestion/internal/observability"
@@ -42,6 +44,7 @@ func newRuntime(config Config) (_ *runtime, runErr error) {
 		return nil, err
 	}
 	cleanup = append(cleanup, db.Close)
+	repository := postgres.NewRepository(db)
 
 	publisher, err := kafkaadapter.NewPublisher(config.KafkaBrokers, kafkaadapter.TelemetryTopic, metrics)
 	if err != nil {
@@ -49,12 +52,24 @@ func newRuntime(config Config) (_ *runtime, runErr error) {
 	}
 	cleanup = append(cleanup, publisher.Close)
 
-	processor := application.NewProcessTelemetry(postgres.NewRepository(db))
+	chargingPublisher, err := kafkaadapter.NewChargingEventPublisher(config.KafkaBrokers, metrics)
+	if err != nil {
+		return nil, fmt.Errorf("configure charging event publisher: %w", err)
+	}
+	cleanup = append(cleanup, chargingPublisher.Close)
+
+	processor := application.NewProcessTelemetry(repository)
 	workers, err := kafkaadapter.NewWorkerPool(config.KafkaBrokers, kafkaadapter.TelemetryTopic, "telemetry-db-writers", config.KafkaWorkers, processor, metrics)
 	if err != nil {
 		return nil, fmt.Errorf("configure Kafka workers: %w", err)
 	}
 	cleanup = append(cleanup, workers.Stop)
+	chargingProcessor := application.NewProcessChargingEvent(repository)
+	chargingWorkers, err := kafkaadapter.NewChargingEventWorkerPool(config.KafkaBrokers, config.KafkaWorkers, chargingProcessor, metrics)
+	if err != nil {
+		return nil, fmt.Errorf("configure charging event workers: %w", err)
+	}
+	cleanup = append(cleanup, chargingWorkers.Stop)
 
 	listen := func(name, address string) (net.Listener, error) {
 		listener, err := net.Listen("tcp", address)
@@ -77,28 +92,56 @@ func newRuntime(config Config) (_ *runtime, runErr error) {
 	if err != nil {
 		return nil, err
 	}
+	var ocppListener net.Listener
+	if len(config.OCPPStations) > 0 {
+		ocppListener, err = listen("OCPP", config.OCPPAddress)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	ingestor := application.NewIngestTelemetry(publisher)
-	httpServer := newHTTPServer(ingestor, metrics, db)
+	chargingIngestor := application.NewIngestChargingEvent(chargingPublisher)
+	chargingStations := make([]ocppapi.StationConfig, 0, len(config.OCPPStations))
+	ocpiStations := make([]ocpiapi.StationConfig, 0, len(config.OCPPStations))
+	for _, station := range config.OCPPStations {
+		chargingStations = append(chargingStations, ocppapi.StationConfig{ChargingStation: station.ChargingStation, Password: station.Password, CPOCountryCode: config.OCPICountryCode, CPOPartyID: config.OCPIPartyID})
+		ocpiStations = append(ocpiStations, ocpiapi.StationConfig{ChargingStation: station.ChargingStation})
+	}
+	ocpiPartners := make([]ocpiapi.Partner, 0, len(config.OCPIEMSPPartners))
+	for _, partner := range config.OCPIEMSPPartners {
+		ocpiPartners = append(ocpiPartners, ocpiapi.Partner{CountryCode: partner.CountryCode, PartyID: partner.PartyID, Token: partner.Token})
+	}
+	ocpiHandler := ocpiapi.NewHandler(config.OCPICountryCode, config.OCPIPartyID, config.OCPIBaseURL, ocpiStations, ocpiPartners, repository, metrics)
+	ocppHandler := ocppapi.NewHandler(chargingIngestor, metrics, chargingStations, config.OCPPMaxConnections, config.OCPPMaxFrameBytes)
+	httpServer := newHTTPServer(ingestor, metrics, db, ocpiHandler)
+	ocppServer := &http.Server{Handler: ocppHandler, ReadHeaderTimeout: 5 * time.Second}
 	grpcServer := newGRPCServer(ingestor, metrics)
 	pprofServer := newPprofServer()
 
+	services := []service{
+		{name: "HTTP", address: config.HTTPAddress, serve: func() error { return httpServer.Serve(httpListener) }, shutdown: httpServer.Shutdown},
+		{name: "gRPC", address: config.GRPCAddress, serve: func() error { return grpcServer.Serve(grpcListener) }, shutdown: func(ctx context.Context) error { return stopGRPC(ctx, grpcServer) }},
+		{name: "pprof", address: config.PPROFAddress, serve: func() error { return pprofServer.Serve(pprofListener) }, shutdown: pprofServer.Shutdown},
+	}
+	if ocppListener != nil {
+		services = append(services, service{name: "OCPP", address: config.OCPPAddress, serve: func() error { return ocppServer.Serve(ocppListener) }, shutdown: ocppServer.Shutdown})
+	}
 	return &runtime{
-		config:    config,
-		db:        db,
-		publisher: publisher,
-		workers:   workers,
-		services: []service{
-			{name: "HTTP", address: config.HTTPAddress, serve: func() error { return httpServer.Serve(httpListener) }, shutdown: httpServer.Shutdown},
-			{name: "gRPC", address: config.GRPCAddress, serve: func() error { return grpcServer.Serve(grpcListener) }, shutdown: func(ctx context.Context) error { return stopGRPC(ctx, grpcServer) }},
-			{name: "pprof", address: config.PPROFAddress, serve: func() error { return pprofServer.Serve(pprofListener) }, shutdown: pprofServer.Shutdown},
-		},
+		config:            config,
+		db:                db,
+		publisher:         publisher,
+		workers:           workers,
+		chargingPublisher: chargingPublisher,
+		chargingWorkers:   chargingWorkers,
+		services:          services,
 	}, nil
 }
 
-func newHTTPServer(ingestor *application.IngestTelemetry, metrics *observability.Metrics, db *sql.DB) *http.Server {
+func newHTTPServer(ingestor *application.IngestTelemetry, metrics *observability.Metrics, db *sql.DB, ocpi http.Handler) *http.Server {
 	mux := http.NewServeMux()
 	mux.Handle("/telemetry", httpapi.NewHandler(ingestor, metrics))
+	mux.Handle("/ocpi/", ocpi)
 	mux.Handle("/metrics", metrics.Handler(func() (open, inUse, idle int) {
 		stats := db.Stats()
 		return stats.OpenConnections, stats.InUse, stats.Idle
