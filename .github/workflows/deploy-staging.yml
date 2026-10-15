@@ -1,4 +1,4 @@
-name: Deploy AWS staging
+name: Deploy Kubernetes staging
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: aws-staging
+  group: kubernetes-staging
   cancel-in-progress: false
 
 jobs:
@@ -35,6 +35,13 @@ jobs:
       - name: Validate Terraform
         working-directory: deploy/aws/staging
         run: terraform init -backend=false -input=false && terraform validate -no-color
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+      - name: Lint Kubernetes chart
+        run: helm lint deploy/kubernetes/device-ingestion
+      - name: Render Kubernetes chart
+        run: helm template device-ingestion deploy/kubernetes/device-ingestion --namespace device-ingestion-staging >/dev/null
 
   deploy:
     needs: validate
@@ -45,25 +52,33 @@ jobs:
       id-token: write
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
-      ECS_CLUSTER: device-ingestion-staging
-      ECS_SERVICE: device-ingestion-staging
-      ECS_PRIVATE_SUBNET_IDS: ${{ vars.ECS_PRIVATE_SUBNET_IDS }}
-      ECS_APP_SECURITY_GROUP: ${{ vars.ECS_APP_SECURITY_GROUP }}
-      ECS_DESIRED_COUNT: ${{ vars.ECS_DESIRED_COUNT || '1' }}
+      EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+      K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE || 'device-ingestion-staging' }}
       ECR_REPOSITORY: device-ingestion/staging
+      DATABASE_HOST: ${{ vars.DATABASE_HOST }}
+      DATABASE_SECRET_ARN: ${{ vars.DATABASE_SECRET_ARN }}
+      KAFKA_BROKERS: ${{ vars.KAFKA_BROKERS }}
+      MSK_SCRAM_SECRET_ARN: ${{ vars.MSK_SCRAM_SECRET_ARN }}
+      OCPP_STATIONS_SECRET_ARN: ${{ vars.OCPP_STATIONS_SECRET_ARN }}
+      OCPI_PARTNERS_SECRET_ARN: ${{ vars.OCPI_PARTNERS_SECRET_ARN }}
+      APPLICATION_ROLE_ARN: ${{ vars.APPLICATION_ROLE_ARN }}
+      CERTIFICATE_ARN: ${{ vars.CERTIFICATE_ARN }}
+      BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}
+      CPO_COUNTRY_CODE: ${{ vars.CPO_COUNTRY_CODE }}
+      CPO_PARTY_ID: ${{ vars.CPO_PARTY_ID }}
+      KAFKA_TOPIC_REPLICATION_FACTOR: ${{ vars.KAFKA_TOPIC_REPLICATION_FACTOR || '2' }}
+      OCPP_ENABLED: ${{ vars.OCPP_ENABLED || 'true' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-      - name: Login to Amazon ECR
+      - uses: aws-actions/amazon-ecr-login@v2
         id: ecr
-        uses: aws-actions/amazon-ecr-login@v2
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
       - name: Build and publish immutable image
         id: image
         env:
@@ -78,40 +93,85 @@ jobs:
             docker push "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
           fi
           echo "uri=$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
-      - name: Register task definitions with this image
-        id: taskdefs
+      - name: Configure Kubernetes credentials
+        run: aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+      - name: Render staging Helm values
         env:
-          IMAGE_URI: ${{ steps.image.outputs.uri }}
+          IMAGE_REPOSITORY: ${{ steps.ecr.outputs.registry }}/device-ingestion/staging
+          IMAGE_TAG: ${{ github.sha }}
+        run: python3 scripts/render-kubernetes-values.py > "$RUNNER_TEMP/staging-values.yaml"
+      - name: Apply workload configuration before setup Jobs
+        env:
+          VALUES_FILE: ${{ runner.temp }}/staging-values.yaml
+          IMAGE_TAG: ${{ github.sha }}
         run: |
           set -euo pipefail
-          register_image() {
-            local family="$1"
-            local definition
-            aws ecs describe-task-definition --task-definition "$family" --query taskDefinition > source.json
-            jq --arg image "$IMAGE_URI" 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy) | .containerDefinitions[0].image=$image' source.json > register.json
-            definition=$(aws ecs register-task-definition --cli-input-json file://register.json --query taskDefinition.taskDefinitionArn --output text)
-            echo "$definition"
-          }
-          echo "app=$(register_image device-ingestion-staging)" >> "$GITHUB_OUTPUT"
-          echo "init=$(register_image device-ingestion-staging-kafka-init)" >> "$GITHUB_OUTPUT"
-          echo "migrate=$(register_image device-ingestion-staging-migrate)" >> "$GITHUB_OUTPUT"
-          echo "smoke=$(register_image device-ingestion-staging-smoke)" >> "$GITHUB_OUTPUT"
-      - name: Create Kafka topics
+          for manifest in serviceaccount.yaml configmap.yaml secretproviderclass.yaml; do
+            helm template device-ingestion deploy/kubernetes/device-ingestion \
+              --namespace "$K8S_NAMESPACE" \
+              --values "$VALUES_FILE" \
+              --set-string image.tag="$IMAGE_TAG" \
+              --show-only "templates/$manifest" | kubectl apply -f -
+          done
+      - name: Initialize Kafka topics
         env:
-          TASK_DEFINITION: ${{ steps.taskdefs.outputs.init }}
-        run: ./scripts/run-staging-task.sh "$TASK_DEFINITION"
+          VALUES_FILE: ${{ runner.temp }}/staging-values.yaml
+          IMAGE_TAG: ${{ github.sha }}
+          JOB_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          job="device-ingestion-kafka-init-${JOB_RUN_ID}"
+          helm template device-ingestion deploy/kubernetes/device-ingestion \
+            --namespace "$K8S_NAMESPACE" --values "$VALUES_FILE" \
+            --set-string image.tag="$IMAGE_TAG" --set jobs.enabled=true \
+            --set-string jobs.runId="$JOB_RUN_ID" \
+            --show-only templates/job-kafka-init.yaml | kubectl apply -f -
+          if ! kubectl wait --namespace "$K8S_NAMESPACE" --for=condition=complete "job/$job" --timeout=4m; then
+            kubectl logs --namespace "$K8S_NAMESPACE" "job/$job" --all-containers=true || true
+            exit 1
+          fi
       - name: Apply database migrations
         env:
-          TASK_DEFINITION: ${{ steps.taskdefs.outputs.migrate }}
-        run: ./scripts/run-staging-task.sh "$TASK_DEFINITION"
-      - name: Deploy ECS service
-        env:
-          TASK_DEFINITION: ${{ steps.taskdefs.outputs.app }}
+          VALUES_FILE: ${{ runner.temp }}/staging-values.yaml
+          IMAGE_TAG: ${{ github.sha }}
+          JOB_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition "$TASK_DEFINITION" --desired-count "$ECS_DESIRED_COUNT" >/dev/null
-          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+          job="device-ingestion-migrate-${JOB_RUN_ID}"
+          helm template device-ingestion deploy/kubernetes/device-ingestion \
+            --namespace "$K8S_NAMESPACE" --values "$VALUES_FILE" \
+            --set-string image.tag="$IMAGE_TAG" --set jobs.enabled=true \
+            --set-string jobs.runId="$JOB_RUN_ID" \
+            --show-only templates/job-migrate.yaml | kubectl apply -f -
+          if ! kubectl wait --namespace "$K8S_NAMESPACE" --for=condition=complete "job/$job" --timeout=6m; then
+            kubectl logs --namespace "$K8S_NAMESPACE" "job/$job" --all-containers=true || true
+            exit 1
+          fi
+      - name: Deploy Kubernetes release
+        env:
+          VALUES_FILE: ${{ runner.temp }}/staging-values.yaml
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          helm upgrade --install device-ingestion deploy/kubernetes/device-ingestion \
+            --namespace "$K8S_NAMESPACE" --values "$VALUES_FILE" \
+            --set-string image.tag="$IMAGE_TAG" --wait --timeout 8m
+          kubectl rollout status --namespace "$K8S_NAMESPACE" deployment/device-ingestion --timeout=8m
       - name: Run protocol and persistence smoke checks
         env:
-          TASK_DEFINITION: ${{ steps.taskdefs.outputs.smoke }}
-        run: ./scripts/run-staging-task.sh "$TASK_DEFINITION"
+          VALUES_FILE: ${{ runner.temp }}/staging-values.yaml
+          IMAGE_TAG: ${{ github.sha }}
+          JOB_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          job="device-ingestion-smoke-${JOB_RUN_ID}"
+          helm template device-ingestion deploy/kubernetes/device-ingestion \
+            --namespace "$K8S_NAMESPACE" --values "$VALUES_FILE" \
+            --set-string image.tag="$IMAGE_TAG" --set jobs.enabled=true \
+            --set-string jobs.runId="$JOB_RUN_ID" \
+            --show-only templates/job-smoke.yaml | kubectl apply -f -
+          if ! kubectl wait --namespace "$K8S_NAMESPACE" --for=condition=complete "job/$job" --timeout=4m; then
+            kubectl logs --namespace "$K8S_NAMESPACE" "job/$job" --all-containers=true || true
+            exit 1
+          fi
+          kubectl logs --namespace "$K8S_NAMESPACE" "job/$job" --all-containers=true

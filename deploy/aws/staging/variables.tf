@@ -41,6 +41,37 @@ variable "github_environment" {
   type    = string
   default = "staging"
 }
+variable "kubernetes_version" {
+  type        = string
+  description = "Amazon EKS Kubernetes minor version available in the selected region."
+}
+variable "cluster_endpoint_public_access_cidrs" {
+  type        = list(string)
+  description = "CIDR blocks allowed to reach the EKS public API endpoint. Restrict this to operator or runner egress ranges when known."
+  default     = ["0.0.0.0/0"]
+}
+variable "node_instance_types" {
+  type        = list(string)
+  description = "EC2 instance types for the private EKS managed node group."
+  default     = ["t3.medium"]
+}
+variable "node_desired_size" {
+  type        = number
+  description = "Desired number of EKS worker nodes for the pilot."
+  default     = 2
+}
+variable "node_min_size" {
+  type    = number
+  default = 1
+}
+variable "node_max_size" {
+  type    = number
+  default = 2
+}
+variable "application_namespace" {
+  type    = string
+  default = "device-ingestion-staging"
+}
 variable "msk_scram_secret_arn" {
   type        = string
   description = "Pre-created Secrets Manager secret ARN with JSON username and password fields."
@@ -64,18 +95,6 @@ variable "cpo_country_code" {
 variable "cpo_party_id" {
   type    = string
   default = ""
-}
-variable "task_cpu" {
-  type    = number
-  default = 512
-}
-variable "task_memory" {
-  type    = number
-  default = 1024
-}
-variable "desired_count" {
-  type    = number
-  default = 0
 }
 variable "deregistration_delay_seconds" {
   type        = number

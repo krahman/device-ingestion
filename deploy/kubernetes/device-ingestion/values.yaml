@@ -1,0 +1,63 @@
+replicaCount: 1
+namespace: device-ingestion-staging
+
+awsRegion: ap-southeast-1
+
+image:
+  repository: REPLACE_WITH_ECR_REPOSITORY
+  tag: bootstrap
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  name: device-ingestion
+  roleArn: REPLACE_WITH_APPLICATION_ROLE_ARN
+
+service:
+  type: ClusterIP
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+database:
+  host: REPLACE_WITH_RDS_HOST
+  port: 5432
+  name: device_ingestion
+  secretArn: REPLACE_WITH_RDS_SECRET_ARN
+
+kafka:
+  brokers: REPLACE_WITH_MSK_BROKERS
+  secretArn: REPLACE_WITH_MSK_SCRAM_SECRET_ARN
+  topicReplicationFactor: 2
+  workers: 2
+
+secrets:
+  ocppStationsArn: REPLACE_WITH_OCPP_STATIONS_SECRET_ARN
+  ocpiPartnersArn: REPLACE_WITH_OCPI_PARTNERS_SECRET_ARN
+
+ocpi:
+  countryCode: ID
+  partyId: ABC
+  baseUrl: https://api.staging.example.com
+
+ingress:
+  enabled: true
+  className: alb
+  groupName: device-ingestion-staging
+  certificateArn: REPLACE_WITH_ACM_CERTIFICATE_ARN
+  baseDomain: staging.example.com
+  idleTimeoutSeconds: 600
+  deregistrationDelaySeconds: 60
+
+ocpp:
+  enabled: true
+
+terminationGracePeriodSeconds: 80
+
+jobs:
+  enabled: false
+  runId: manual

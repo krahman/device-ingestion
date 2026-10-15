@@ -1,5 +1,12 @@
 aws_region                  = "ap-southeast-1"
 availability_zones          = ["ap-southeast-1a", "ap-southeast-1b"]
+# Required: add kubernetes_version with an EKS version available in aws_region.
+cluster_endpoint_public_access_cidrs = ["203.0.113.10/32"]
+node_instance_types         = ["t3.medium"]
+node_desired_size           = 2
+node_min_size               = 1
+node_max_size               = 2
+application_namespace       = "device-ingestion-staging"
 certificate_arn             = "arn:aws:acm:ap-southeast-1:123456789012:certificate/replace-me"
 base_domain                 = "staging.example.com"
 github_repository           = "owner/device-ingestion"

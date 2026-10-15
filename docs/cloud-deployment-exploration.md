@@ -106,29 +106,27 @@ available replica when uninterrupted charger connectivity matters.
 
 | Concern | Candidate |
 | --- | --- |
-| Container runtime | ECS on Fargate |
+| Container runtime | Amazon EKS managed node group |
 | Image registry | Amazon ECR |
-| Ingress | Application Load Balancer |
+| Ingress | AWS Load Balancer Controller and Application Load Balancer |
 | Kafka | Amazon MSK |
 | PostgreSQL | Amazon RDS for PostgreSQL |
-| Secrets and logs | AWS Secrets Manager and CloudWatch |
+| Secrets and logs | AWS Secrets Manager, Secrets Store CSI Driver, and CloudWatch |
 
-An ECS service can attach multiple target groups to expose the app's separate
-ports. An Application Load Balancer supports WebSockets and gRPC. Route HTTP
-and OCPI traffic to port 8080, OCPP traffic to 8081, and gRPC to 50051 using
-appropriate target groups and rules. Configure the ALB idle timeout above the
-OCPP heartbeat interval; the AWS default is 60 seconds and the documented range
-is 1 to 4000 seconds.
+The Kubernetes pilot uses the AWS Load Balancer Controller to create an
+Application Load Balancer from Kubernetes Ingress resources. Route HTTP and
+OCPI traffic to port 8080, OCPP WebSockets to 8081, and gRPC to 50051 with
+protocol-specific target group settings. Configure the ALB idle timeout above
+the OCPP heartbeat interval.
 
-Place the app, MSK, and RDS in a VPC. Expose only the ALB publicly; restrict
-broker and database access to the app's security group. For MSK, choose an
-authentication mechanism supported by the Go client integration. Ensure the
-app's Kafka config supports that mechanism before selecting the cluster
-security mode.
+Place worker nodes, MSK, and RDS in private subnets. Expose only the ALB
+publicly; restrict broker and database access to the EKS worker security group.
+Use workload identity for the app's Secrets Manager access and GitHub OIDC for
+the deployment workflow.
 
-**Fit:** This is the more direct first option for the current multi-port
-container layout, based on ECS multiple-target-group support and ALB's
-WebSocket/gRPC support.
+**Fit:** EKS is the selected pilot target because Kubernetes deployment and
+operations are the project objective. It adds cluster and ingress-controller
+operations compared with ECS, while preserving the managed AWS data services.
 
 ## Azure option
 
@@ -172,16 +170,14 @@ on the local Compose topic initializer.
 
 ## Decisions to make
 
-- Which cloud should be the first target: AWS or Azure?
-- Is the first deployment a learning/staging environment or production?
-- On Azure, is Kafka protocol compatibility through Event Hubs acceptable, or
-  is an Apache Kafka service required?
 - What charger connection count and reconnect behavior must the ingress and
   scaling policy support?
+- If an Azure deployment is considered later, is Kafka protocol compatibility
+  through Event Hubs acceptable, or is an Apache Kafka service required?
 
 ## References
 
-- [ECS service load balancing](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/service-load-balancing.html)
+- [AWS Load Balancer Controller for EKS](https://docs.aws.amazon.com/eks/latest/userguide/lbc-helm.html)
 - [ALB WebSocket support](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-listeners.html)
 - [ALB idle timeout configuration](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/edit-load-balancer-attributes.html)
 - [Azure Event Hubs Kafka overview](https://learn.microsoft.com/azure/event-hubs/azure-event-hubs-kafka-overview)

@@ -236,11 +236,11 @@ run the app directly on the host instead of using Compose.
 ## Deploy to AWS staging
 
 The repository includes Terraform infrastructure and a GitHub Actions OIDC
-deployment workflow for an isolated AWS staging environment. The deployment
+deployment workflow for an isolated AWS EKS staging pilot. The deployment
 covers HTTP/OCPI, OCPP WebSockets, and gRPC, backed by private MSK and RDS
-PostgreSQL. See [the AWS staging deployment guide](docs/aws-staging-deployment.md)
-for prerequisites, secret setup, Terraform commands, GitHub environment
-configuration, smoke checks, rollback, and teardown.
+PostgreSQL. See [the AWS EKS staging guide](docs/aws-staging-deployment.md) for
+cluster add-ons, prerequisites, secret setup, Terraform commands, GitHub
+environment configuration, smoke checks, rollback, and teardown.
 
 Set `KAFKA_DB_WORKERS` to control the number of consumer group members. It must
 be between 1 and 32, and should not exceed the input topic partition count for

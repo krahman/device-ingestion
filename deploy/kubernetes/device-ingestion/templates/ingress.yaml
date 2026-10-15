@@ -1,0 +1,131 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "device-ingestion.labels" . | nindent 4 }}
+  annotations:
+    alb.ingress.kubernetes.io/group.name: {{ .Values.ingress.groupName | quote }}
+    alb.ingress.kubernetes.io/group.order: "10"
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingress.certificateArn | quote }}
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/load-balancer-attributes: "idle_timeout.timeout_seconds={{ .Values.ingress.idleTimeoutSeconds }}"
+    alb.ingress.kubernetes.io/deregistration_delay.timeout_seconds: {{ .Values.ingress.deregistrationDelaySeconds | quote }}
+    alb.ingress.kubernetes.io/healthcheck-path: /health/ready
+    alb.ingress.kubernetes.io/healthcheck-port: "8080"
+    alb.ingress.kubernetes.io/success-codes: "200"
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: api.{{ .Values.ingress.baseDomain }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}
+                port:
+                  name: http
+---
+{{- if .Values.ocpp.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-ocpp
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "device-ingestion.labels" . | nindent 4 }}
+  annotations:
+    alb.ingress.kubernetes.io/group.name: {{ .Values.ingress.groupName | quote }}
+    alb.ingress.kubernetes.io/group.order: "20"
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingress.certificateArn | quote }}
+    alb.ingress.kubernetes.io/healthcheck-path: /health/ready
+    alb.ingress.kubernetes.io/healthcheck-port: "8080"
+    alb.ingress.kubernetes.io/success-codes: "200"
+    alb.ingress.kubernetes.io/load-balancer-attributes: "idle_timeout.timeout_seconds={{ .Values.ingress.idleTimeoutSeconds }}"
+    alb.ingress.kubernetes.io/deregistration_delay.timeout_seconds: {{ .Values.ingress.deregistrationDelaySeconds | quote }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: ocpp.{{ .Values.ingress.baseDomain }}
+      http:
+        paths:
+          - path: /ocpp
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}
+                port:
+                  name: ocpp
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-grpc
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "device-ingestion.labels" . | nindent 4 }}
+  annotations:
+    alb.ingress.kubernetes.io/group.name: {{ .Values.ingress.groupName | quote }}
+    alb.ingress.kubernetes.io/group.order: "30"
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingress.certificateArn | quote }}
+    alb.ingress.kubernetes.io/backend-protocol-version: GRPC
+    alb.ingress.kubernetes.io/healthcheck-protocol: GRPC
+    alb.ingress.kubernetes.io/healthcheck-path: /grpc.health.v1.Health/Check
+    alb.ingress.kubernetes.io/success-codes: "0"
+    alb.ingress.kubernetes.io/load-balancer-attributes: "idle_timeout.timeout_seconds={{ .Values.ingress.idleTimeoutSeconds }}"
+    alb.ingress.kubernetes.io/deregistration_delay.timeout_seconds: {{ .Values.ingress.deregistrationDelaySeconds | quote }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: grpc.{{ .Values.ingress.baseDomain }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}
+                port:
+                  name: grpc
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-metrics-block
+  namespace: {{ .Values.namespace }}
+  annotations:
+    alb.ingress.kubernetes.io/group.name: {{ .Values.ingress.groupName | quote }}
+    alb.ingress.kubernetes.io/group.order: "1"
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingress.certificateArn | quote }}
+    alb.ingress.kubernetes.io/actions.metrics-block: '{"type":"fixed-response","fixedResponseConfig":{"contentType":"text/plain","statusCode":"404","messageBody":"Not found"}}'
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: api.{{ .Values.ingress.baseDomain }}
+      http:
+        paths:
+          - path: /metrics
+            pathType: Prefix
+            backend:
+              service:
+                name: metrics-block
+                port:
+                  name: use-annotation
+{{- end }}

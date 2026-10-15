@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "device-ingestion.labels" . | nindent 4 }}
+  annotations:
+    meta.helm.sh/release-name: {{ .Release.Name | quote }}
+    meta.helm.sh/release-namespace: {{ .Release.Namespace | quote }}
+data:
+  HTTP_ADDRESS: ":8080"
+  OCPP_ADDRESS: ":8081"
+  GRPC_ADDRESS: ":50051"
+  PPROF_ADDRESS: "127.0.0.1:6060"
+  KAFKA_BROKERS: {{ .Values.kafka.brokers | quote }}
+  KAFKA_TLS: "true"
+  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  KAFKA_TOPIC_REPLICATION_FACTOR: {{ .Values.kafka.topicReplicationFactor | quote }}
+  KAFKA_DB_WORKERS: {{ .Values.kafka.workers | quote }}
+  DB_MAX_OPEN_CONNS: {{ .Values.kafka.workers | quote }}
+  DATABASE_HOST: {{ .Values.database.host | quote }}
+  DATABASE_PORT: {{ .Values.database.port | quote }}
+  DATABASE_NAME: {{ .Values.database.name | quote }}
+  DATABASE_SSLMODE: verify-full
+  DATABASE_SSLROOTCERT: /etc/ssl/cert.pem
+  DATABASE_TLS_VERIFY: "true"
+  OCPI_CPO_COUNTRY_CODE: {{ .Values.ocpi.countryCode | quote }}
+  OCPI_CPO_PARTY_ID: {{ .Values.ocpi.partyId | quote }}
+  OCPI_BASE_URL: {{ .Values.ocpi.baseUrl | quote }}
+  STAGING_API_URL: {{ printf "https://api.%s" .Values.ingress.baseDomain | quote }}
+  STAGING_OCPP_URL: {{ printf "wss://ocpp.%s/ocpp" .Values.ingress.baseDomain | quote }}
+  STAGING_GRPC_TARGET: {{ printf "grpc.%s:443" .Values.ingress.baseDomain | quote }}
