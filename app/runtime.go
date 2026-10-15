@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"time"
 
 	kafkaadapter "device-ingestion/internal/adapters/kafka"
@@ -26,7 +27,9 @@ type runtime struct {
 
 func (r *runtime) Run(ctx context.Context) error {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
-	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	// Worker cancellation is controlled by the shutdown sequence below so a
+	// signal can stop ingress before canceling in-flight Kafka processing.
+	workerCtx, cancelWorkers := context.WithCancel(context.Background())
 	r.workers.Start(workerCtx)
 	defer cancelWorkers()
 
@@ -55,8 +58,7 @@ func (r *runtime) Run(ctx context.Context) error {
 		}
 	}
 
-	cancelWorkers()
-	if err := r.workers.Stop(); err != nil {
+	if err := r.workers.Shutdown(shutdownCtx); err != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("stop Kafka workers: %w", err))
 	}
 	if err := r.publisher.Close(); err != nil {
@@ -92,8 +94,8 @@ func stopGRPC(ctx context.Context, server *grpc.Server) error {
 
 func closeReverse(cleanup []func() error) []error {
 	var closeErrors []error
-	for i := len(cleanup) - 1; i >= 0; i-- {
-		if err := cleanup[i](); err != nil {
+	for _, c := range slices.Backward(cleanup) {
+		if err := c(); err != nil {
 			closeErrors = append(closeErrors, err)
 		}
 	}
