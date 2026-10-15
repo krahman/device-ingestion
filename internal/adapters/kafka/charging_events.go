@@ -26,13 +26,21 @@ type ChargingEventPublisher struct {
 	metrics *observability.Metrics
 }
 
-func NewChargingEventPublisher(brokers []string, metrics *observability.Metrics) (*ChargingEventPublisher, error) {
+func NewChargingEventPublisher(brokers []string, metrics *observability.Metrics, security ...SecurityConfig) (*ChargingEventPublisher, error) {
 	addresses, err := normalizeBrokers(brokers)
 	if err != nil {
 		return nil, err
 	}
+	var secure SecurityConfig
+	if len(security) > 0 {
+		secure = security[0]
+	}
+	transport, err := secure.Transport()
+	if err != nil {
+		return nil, err
+	}
 	return &ChargingEventPublisher{
-		writer:  &kafkago.Writer{Addr: kafkago.TCP(addresses...), Balancer: &kafkago.Hash{}, BatchSize: 100, BatchBytes: maxFetchBytes, BatchTimeout: 10 * time.Millisecond, RequiredAcks: kafkago.RequireAll},
+		writer:  &kafkago.Writer{Addr: kafkago.TCP(addresses...), Transport: transport, Balancer: &kafkago.Hash{}, BatchSize: 100, BatchBytes: maxFetchBytes, BatchTimeout: 10 * time.Millisecond, RequiredAcks: kafkago.RequireAll},
 		metrics: metrics,
 	}, nil
 }
@@ -72,7 +80,7 @@ type ChargingEventWorkerPool struct {
 	stopOnce   sync.Once
 }
 
-func NewChargingEventWorkerPool(brokers []string, workerCount int, processor chargingEventProcessor, metrics *observability.Metrics) (*ChargingEventWorkerPool, error) {
+func NewChargingEventWorkerPool(brokers []string, workerCount int, processor chargingEventProcessor, metrics *observability.Metrics, security ...SecurityConfig) (*ChargingEventWorkerPool, error) {
 	addresses, err := normalizeBrokers(brokers)
 	if err != nil {
 		return nil, err
@@ -80,14 +88,26 @@ func NewChargingEventWorkerPool(brokers []string, workerCount int, processor cha
 	if workerCount < 1 || workerCount > maxWorkerCount {
 		return nil, errors.New("charging Kafka worker count must be between 1 and 32")
 	}
+	var secure SecurityConfig
+	if len(security) > 0 {
+		secure = security[0]
+	}
+	dialer, err := secure.Dialer()
+	if err != nil {
+		return nil, err
+	}
+	transport, err := secure.Transport()
+	if err != nil {
+		return nil, err
+	}
 	pool := &ChargingEventWorkerPool{
 		readers:    make([]*kafkago.Reader, 0, workerCount),
-		deadLetter: &kafkago.Writer{Addr: kafkago.TCP(addresses...), Balancer: &kafkago.Hash{}, RequiredAcks: kafkago.RequireAll},
+		deadLetter: &kafkago.Writer{Addr: kafkago.TCP(addresses...), Transport: transport, Balancer: &kafkago.Hash{}, RequiredAcks: kafkago.RequireAll},
 		processor:  processor, metrics: metrics,
 	}
 	for range workerCount {
 		pool.readers = append(pool.readers, kafkago.NewReader(kafkago.ReaderConfig{
-			Brokers: addresses, Topic: ChargingEventsTopic, GroupID: "charging-db-writers",
+			Brokers: addresses, Dialer: dialer, Topic: ChargingEventsTopic, GroupID: "charging-db-writers",
 			StartOffset: kafkago.FirstOffset, MinBytes: 1, QueueCapacity: 1, MaxBytes: maxFetchBytes,
 		}))
 	}

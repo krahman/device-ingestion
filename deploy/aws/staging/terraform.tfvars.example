@@ -1,0 +1,12 @@
+aws_region                  = "ap-southeast-1"
+availability_zones          = ["ap-southeast-1a", "ap-southeast-1b"]
+certificate_arn             = "arn:aws:acm:ap-southeast-1:123456789012:certificate/replace-me"
+base_domain                 = "staging.example.com"
+github_repository           = "owner/device-ingestion"
+github_oidc_provider_arn    = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+msk_scram_secret_arn        = "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:AmazonMSK_device-ingestion-staging-xxxxxx"
+msk_scram_kms_key_arn       = "arn:aws:kms:ap-southeast-1:123456789012:key/replace-me"
+ocpp_stations_secret_arn    = "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:device-ingestion/staging/ocpp-stations-xxxxxx"
+ocpi_partners_secret_arn    = "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:device-ingestion/staging/ocpi-partners-xxxxxx"
+cpo_country_code            = "ID"
+cpo_party_id                = "ABC"

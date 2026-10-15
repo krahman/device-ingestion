@@ -39,10 +39,10 @@ func main() {
 	var stats kafkaadapter.ReconcileStats
 	if *charging {
 		processor := application.NewProcessChargingEvent(repository)
-		stats, err = kafkaadapter.ReplayChargingEvents(ctx, config.KafkaBrokers, *workers, processor)
+		stats, err = kafkaadapter.ReplayChargingEvents(ctx, config.KafkaBrokers, *workers, processor, config.KafkaSecurity)
 	} else {
 		processor := application.NewProcessTelemetry(repository)
-		stats, err = kafkaadapter.ReplayTopic(ctx, config.KafkaBrokers, kafkaadapter.TelemetryTopic, *workers, processor)
+		stats, err = kafkaadapter.ReplayTopic(ctx, config.KafkaBrokers, kafkaadapter.TelemetryTopic, *workers, processor, config.KafkaSecurity)
 	}
 	if err != nil {
 		log.Fatal(err)

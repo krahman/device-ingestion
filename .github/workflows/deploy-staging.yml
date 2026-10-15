@@ -1,0 +1,117 @@
+name: Deploy AWS staging
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aws-staging
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check Go formatting
+        run: test -z "$(gofmt -l $(find app cmd internal proto -name '*.go'))"
+      - name: Test Go packages
+        run: go test -mod=vendor ./...
+      - name: Build Go packages
+        run: go build -mod=vendor ./...
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive deploy/aws/staging
+      - name: Validate Terraform
+        working-directory: deploy/aws/staging
+        run: terraform init -backend=false -input=false && terraform validate -no-color
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECS_CLUSTER: device-ingestion-staging
+      ECS_SERVICE: device-ingestion-staging
+      ECS_PRIVATE_SUBNET_IDS: ${{ vars.ECS_PRIVATE_SUBNET_IDS }}
+      ECS_APP_SECURITY_GROUP: ${{ vars.ECS_APP_SECURITY_GROUP }}
+      ECS_DESIRED_COUNT: ${{ vars.ECS_DESIRED_COUNT || '1' }}
+      ECR_REPOSITORY: device-ingestion/staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and publish immutable image
+        id: image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "Image $IMAGE_TAG already exists; reusing the immutable image."
+          else
+            docker build --pull -t "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" .
+            docker push "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          fi
+          echo "uri=$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+      - name: Register task definitions with this image
+        id: taskdefs
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+        run: |
+          set -euo pipefail
+          register_image() {
+            local family="$1"
+            local definition
+            aws ecs describe-task-definition --task-definition "$family" --query taskDefinition > source.json
+            jq --arg image "$IMAGE_URI" 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy) | .containerDefinitions[0].image=$image' source.json > register.json
+            definition=$(aws ecs register-task-definition --cli-input-json file://register.json --query taskDefinition.taskDefinitionArn --output text)
+            echo "$definition"
+          }
+          echo "app=$(register_image device-ingestion-staging)" >> "$GITHUB_OUTPUT"
+          echo "init=$(register_image device-ingestion-staging-kafka-init)" >> "$GITHUB_OUTPUT"
+          echo "migrate=$(register_image device-ingestion-staging-migrate)" >> "$GITHUB_OUTPUT"
+          echo "smoke=$(register_image device-ingestion-staging-smoke)" >> "$GITHUB_OUTPUT"
+      - name: Create Kafka topics
+        env:
+          TASK_DEFINITION: ${{ steps.taskdefs.outputs.init }}
+        run: ./scripts/run-staging-task.sh "$TASK_DEFINITION"
+      - name: Apply database migrations
+        env:
+          TASK_DEFINITION: ${{ steps.taskdefs.outputs.migrate }}
+        run: ./scripts/run-staging-task.sh "$TASK_DEFINITION"
+      - name: Deploy ECS service
+        env:
+          TASK_DEFINITION: ${{ steps.taskdefs.outputs.app }}
+        run: |
+          set -euo pipefail
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition "$TASK_DEFINITION" --desired-count "$ECS_DESIRED_COUNT" >/dev/null
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+      - name: Run protocol and persistence smoke checks
+        env:
+          TASK_DEFINITION: ${{ steps.taskdefs.outputs.smoke }}
+        run: ./scripts/run-staging-task.sh "$TASK_DEFINITION"

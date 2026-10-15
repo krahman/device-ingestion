@@ -4,20 +4,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	kafkaadapter "device-ingestion/internal/adapters/kafka"
 	"device-ingestion/internal/domain"
 )
 
 type Config struct {
 	KafkaBrokers       []string
+	KafkaSecurity      kafkaadapter.SecurityConfig
 	KafkaWorkers       int
 	DBMaxOpen          int
 	DatabaseURL        string
+	DatabaseTLSVerify  bool
 	HTTPAddress        string
 	OCPPAddress        string
 	OCPPStations       []OCPPStationConfig
@@ -44,6 +48,25 @@ type OCPIEMSPPartner struct {
 }
 
 func ConfigFromEnv() (Config, error) {
+	kafkaTLS, err := boolEnv("KAFKA_TLS", false)
+	if err != nil {
+		return Config{}, err
+	}
+	kafkaSecurity := kafkaadapter.SecurityConfig{TLS: kafkaTLS, Mechanism: env("KAFKA_SASL_MECHANISM", ""), Username: os.Getenv("KAFKA_SASL_USERNAME"), Password: os.Getenv("KAFKA_SASL_PASSWORD")}
+	if _, err := kafkaSecurity.Dialer(); err != nil {
+		return Config{}, fmt.Errorf("invalid Kafka security configuration: %w", err)
+	}
+	databaseTLSVerify, err := boolEnv("DATABASE_TLS_VERIFY", false)
+	if err != nil {
+		return Config{}, err
+	}
+	databaseURL := DatabaseURLFromEnv()
+	if databaseTLSVerify {
+		parsed, parseErr := url.Parse(databaseURL)
+		if parseErr != nil || parsed.Query().Get("sslmode") != "verify-full" {
+			return Config{}, fmt.Errorf("DATABASE_URL must set sslmode=verify-full when DATABASE_TLS_VERIFY is enabled")
+		}
+	}
 	workers, err := intEnv("KAFKA_DB_WORKERS", 4)
 	if err != nil {
 		return Config{}, err
@@ -145,9 +168,11 @@ func ConfigFromEnv() (Config, error) {
 
 	return Config{
 		KafkaBrokers:       strings.Split(env("KAFKA_BROKERS", "localhost:9092"), ","),
+		KafkaSecurity:      kafkaSecurity,
 		KafkaWorkers:       workers,
 		DBMaxOpen:          dbMaxOpen,
-		DatabaseURL:        DatabaseURLFromEnv(),
+		DatabaseURL:        databaseURL,
+		DatabaseTLSVerify:  databaseTLSVerify,
 		HTTPAddress:        env("HTTP_ADDRESS", ":8080"),
 		OCPPAddress:        env("OCPP_ADDRESS", ":8081"),
 		OCPPStations:       stations,
@@ -164,7 +189,23 @@ func ConfigFromEnv() (Config, error) {
 }
 
 func DatabaseURLFromEnv() string {
-	return env("DATABASE_URL", "postgres://device_ingestion:device_ingestion@127.0.0.1:5432/device_ingestion?sslmode=disable")
+	if dsn := strings.TrimSpace(os.Getenv("DATABASE_URL")); dsn != "" {
+		return dsn
+	}
+	host := strings.TrimSpace(os.Getenv("DATABASE_HOST"))
+	if host == "" {
+		return "postgres://device_ingestion:device_ingestion@127.0.0.1:5432/device_ingestion?sslmode=disable"
+	}
+	port := env("DATABASE_PORT", "5432")
+	database := env("DATABASE_NAME", "device_ingestion")
+	user := env("DATABASE_USER", "")
+	password := os.Getenv("DATABASE_PASSWORD")
+	mode := env("DATABASE_SSLMODE", "verify-full")
+	query := url.Values{"sslmode": []string{mode}}
+	if rootCert := strings.TrimSpace(os.Getenv("DATABASE_SSLROOTCERT")); rootCert != "" {
+		query.Set("sslrootcert", rootCert)
+	}
+	return (&url.URL{Scheme: "postgres", User: url.UserPassword(user, password), Host: net.JoinHostPort(host, port), Path: "/" + database, RawQuery: query.Encode()}).String()
 }
 
 func env(key, fallback string) string {
@@ -180,4 +221,13 @@ func intEnv(key string, fallback int) (int, error) {
 		return 0, fmt.Errorf("invalid %s: %w", key, err)
 	}
 	return value, nil
+}
+
+func boolEnv(key string, fallback bool) (bool, error) {
+	value := env(key, strconv.FormatBool(fallback))
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	return parsed, nil
 }

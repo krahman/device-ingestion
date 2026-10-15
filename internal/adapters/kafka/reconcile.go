@@ -29,7 +29,11 @@ type partitionWindow struct {
 // ReplayTopic replays the retained Kafka topic through the idempotent
 // telemetry processor. It does not change the production consumer group's
 // committed offsets.
-func ReplayTopic(ctx context.Context, brokers []string, topic string, workerCount int, processor telemetryProcessor) (ReconcileStats, error) {
+func ReplayTopic(ctx context.Context, brokers []string, topic string, workerCount int, processor telemetryProcessor, security ...SecurityConfig) (ReconcileStats, error) {
+	var secure SecurityConfig
+	if len(security) > 0 {
+		secure = security[0]
+	}
 	return replayTopic(ctx, brokers, topic, workerCount, func(ctx context.Context, data []byte) (bool, error) {
 		var packet domain.TelemetryPacket
 		if err := json.Unmarshal(data, &packet); err != nil {
@@ -44,12 +48,16 @@ func ReplayTopic(ctx context.Context, brokers []string, topic string, workerCoun
 			return false, err
 		}
 		return false, nil
-	})
+	}, secure)
 }
 
 // ReplayChargingEvents replays normalized charging events without changing
 // the live charging consumer group's committed offsets.
-func ReplayChargingEvents(ctx context.Context, brokers []string, workerCount int, processor chargingEventProcessor) (ReconcileStats, error) {
+func ReplayChargingEvents(ctx context.Context, brokers []string, workerCount int, processor chargingEventProcessor, security ...SecurityConfig) (ReconcileStats, error) {
+	var secure SecurityConfig
+	if len(security) > 0 {
+		secure = security[0]
+	}
 	return replayTopic(ctx, brokers, ChargingEventsTopic, workerCount, func(ctx context.Context, data []byte) (bool, error) {
 		var event domain.ChargingEvent
 		if err := json.Unmarshal(data, &event); err != nil {
@@ -64,10 +72,10 @@ func ReplayChargingEvents(ctx context.Context, brokers []string, workerCount int
 			return false, err
 		}
 		return false, nil
-	})
+	}, secure)
 }
 
-func replayTopic(ctx context.Context, brokers []string, topic string, workerCount int, process func(context.Context, []byte) (bool, error)) (ReconcileStats, error) {
+func replayTopic(ctx context.Context, brokers []string, topic string, workerCount int, process func(context.Context, []byte) (bool, error), security SecurityConfig) (ReconcileStats, error) {
 	var stats ReconcileStats
 	if workerCount < 1 || workerCount > maxReconcileWorkers {
 		return stats, fmt.Errorf("reconciliation worker count must be between 1 and %d", maxReconcileWorkers)
@@ -77,7 +85,11 @@ func replayTopic(ctx context.Context, brokers []string, topic string, workerCoun
 		return stats, err
 	}
 
-	client := &kafkago.Client{Addr: kafkago.TCP(addresses[0])}
+	transport, err := security.Transport()
+	if err != nil {
+		return stats, err
+	}
+	client := &kafkago.Client{Addr: kafkago.TCP(addresses[0]), Transport: transport}
 	metadata, err := client.Metadata(ctx, &kafkago.MetadataRequest{Topics: []string{topic}})
 	if err != nil {
 		return stats, fmt.Errorf("read Kafka topic metadata: %w", err)
@@ -147,7 +159,7 @@ func replayTopic(ctx context.Context, brokers []string, topic string, workerCoun
 		go func() {
 			defer workers.Done()
 			for window := range jobs {
-				count, skippedCount, err := replayPartition(replayCtx, addresses, topic, window, process)
+				count, skippedCount, err := replayPartition(replayCtx, addresses, topic, window, process, security)
 				replayed.Add(count)
 				skipped.Add(skippedCount)
 				if err != nil {
@@ -181,9 +193,14 @@ enqueue:
 	return stats, errors.Join(replayErrors...)
 }
 
-func replayPartition(ctx context.Context, brokers []string, topic string, window partitionWindow, process func(context.Context, []byte) (bool, error)) (int64, int64, error) {
+func replayPartition(ctx context.Context, brokers []string, topic string, window partitionWindow, process func(context.Context, []byte) (bool, error), security SecurityConfig) (int64, int64, error) {
+	dialer, err := security.Dialer()
+	if err != nil {
+		return 0, 0, err
+	}
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers:        brokers,
+		Dialer:         dialer,
 		Topic:          topic,
 		Partition:      window.partition,
 		QueueCapacity:  1,

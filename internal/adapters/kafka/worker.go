@@ -38,7 +38,7 @@ type WorkerPool struct {
 	stopOnce      sync.Once
 }
 
-func NewWorkerPool(brokers []string, topic, groupID string, workerCount int, processor telemetryProcessor, metrics *observability.Metrics) (*WorkerPool, error) {
+func NewWorkerPool(brokers []string, topic, groupID string, workerCount int, processor telemetryProcessor, metrics *observability.Metrics, security ...SecurityConfig) (*WorkerPool, error) {
 	addresses, err := normalizeBrokers(brokers)
 	if err != nil {
 		return nil, err
@@ -50,6 +50,18 @@ func NewWorkerPool(brokers []string, topic, groupID string, workerCount int, pro
 		return nil, errors.New("kafka worker count cannot exceed 32")
 	}
 
+	var secure SecurityConfig
+	if len(security) > 0 {
+		secure = security[0]
+	}
+	dialer, err := secure.Dialer()
+	if err != nil {
+		return nil, err
+	}
+	transport, err := secure.Transport()
+	if err != nil {
+		return nil, err
+	}
 	pool := &WorkerPool{
 		readers:   make([]*kafkago.Reader, 0, workerCount),
 		topic:     topic,
@@ -57,6 +69,7 @@ func NewWorkerPool(brokers []string, topic, groupID string, workerCount int, pro
 		metrics:   metrics,
 		deadLetter: &kafkago.Writer{
 			Addr:         kafkago.TCP(addresses...),
+			Transport:    transport,
 			Balancer:     &kafkago.Hash{},
 			RequiredAcks: kafkago.RequireAll,
 		},
@@ -64,6 +77,7 @@ func NewWorkerPool(brokers []string, topic, groupID string, workerCount int, pro
 	for range workerCount {
 		pool.readers = append(pool.readers, kafkago.NewReader(kafkago.ReaderConfig{
 			Brokers:       addresses,
+			Dialer:        dialer,
 			Topic:         topic,
 			GroupID:       groupID,
 			StartOffset:   kafkago.FirstOffset,

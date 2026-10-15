@@ -22,14 +22,23 @@ type Publisher struct {
 	metrics *observability.Metrics
 }
 
-func NewPublisher(brokers []string, topic string, metrics *observability.Metrics) (*Publisher, error) {
+func NewPublisher(brokers []string, topic string, metrics *observability.Metrics, security ...SecurityConfig) (*Publisher, error) {
 	addresses, err := normalizeBrokers(brokers)
+	if err != nil {
+		return nil, err
+	}
+	var secure SecurityConfig
+	if len(security) > 0 {
+		secure = security[0]
+	}
+	transport, err := secure.Transport()
 	if err != nil {
 		return nil, err
 	}
 	return &Publisher{
 		writer: &kafkago.Writer{
 			Addr:         kafkago.TCP(addresses...),
+			Transport:    transport,
 			Balancer:     &kafkago.Hash{},
 			BatchSize:    500,
 			BatchBytes:   1 << 20,

@@ -34,3 +34,15 @@ go.work.sum
 
 # Agents
 .codex
+
+# Terraform local state and working directory
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json

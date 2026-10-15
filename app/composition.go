@@ -20,6 +20,8 @@ import (
 	pb "device-ingestion/proto"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	grpc_health_v1 "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 type service struct {
@@ -44,28 +46,38 @@ func newRuntime(config Config) (_ *runtime, runErr error) {
 		return nil, err
 	}
 	cleanup = append(cleanup, db.Close)
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := db.PingContext(startupCtx); err != nil {
+		cancelStartup()
+		return nil, fmt.Errorf("check PostgreSQL readiness: %w", err)
+	}
+	if err := kafkaadapter.CheckBrokers(startupCtx, config.KafkaBrokers, config.KafkaSecurity); err != nil {
+		cancelStartup()
+		return nil, fmt.Errorf("check Kafka readiness: %w", err)
+	}
+	cancelStartup()
 	repository := postgres.NewRepository(db)
 
-	publisher, err := kafkaadapter.NewPublisher(config.KafkaBrokers, kafkaadapter.TelemetryTopic, metrics)
+	publisher, err := kafkaadapter.NewPublisher(config.KafkaBrokers, kafkaadapter.TelemetryTopic, metrics, config.KafkaSecurity)
 	if err != nil {
 		return nil, fmt.Errorf("configure Kafka publisher: %w", err)
 	}
 	cleanup = append(cleanup, publisher.Close)
 
-	chargingPublisher, err := kafkaadapter.NewChargingEventPublisher(config.KafkaBrokers, metrics)
+	chargingPublisher, err := kafkaadapter.NewChargingEventPublisher(config.KafkaBrokers, metrics, config.KafkaSecurity)
 	if err != nil {
 		return nil, fmt.Errorf("configure charging event publisher: %w", err)
 	}
 	cleanup = append(cleanup, chargingPublisher.Close)
 
 	processor := application.NewProcessTelemetry(repository)
-	workers, err := kafkaadapter.NewWorkerPool(config.KafkaBrokers, kafkaadapter.TelemetryTopic, "telemetry-db-writers", config.KafkaWorkers, processor, metrics)
+	workers, err := kafkaadapter.NewWorkerPool(config.KafkaBrokers, kafkaadapter.TelemetryTopic, "telemetry-db-writers", config.KafkaWorkers, processor, metrics, config.KafkaSecurity)
 	if err != nil {
 		return nil, fmt.Errorf("configure Kafka workers: %w", err)
 	}
 	cleanup = append(cleanup, workers.Stop)
 	chargingProcessor := application.NewProcessChargingEvent(repository)
-	chargingWorkers, err := kafkaadapter.NewChargingEventWorkerPool(config.KafkaBrokers, config.KafkaWorkers, chargingProcessor, metrics)
+	chargingWorkers, err := kafkaadapter.NewChargingEventWorkerPool(config.KafkaBrokers, config.KafkaWorkers, chargingProcessor, metrics, config.KafkaSecurity)
 	if err != nil {
 		return nil, fmt.Errorf("configure charging event workers: %w", err)
 	}
@@ -114,7 +126,12 @@ func newRuntime(config Config) (_ *runtime, runErr error) {
 	}
 	ocpiHandler := ocpiapi.NewHandler(config.OCPICountryCode, config.OCPIPartyID, config.OCPIBaseURL, ocpiStations, ocpiPartners, repository, metrics)
 	ocppHandler := ocppapi.NewHandler(chargingIngestor, metrics, chargingStations, config.OCPPMaxConnections, config.OCPPMaxFrameBytes)
-	httpServer := newHTTPServer(ingestor, metrics, db, ocpiHandler)
+	httpServer := newHTTPServer(ingestor, metrics, db, ocpiHandler, func(ctx context.Context) error {
+		if err := db.PingContext(ctx); err != nil {
+			return err
+		}
+		return kafkaadapter.CheckBrokers(ctx, config.KafkaBrokers, config.KafkaSecurity)
+	})
 	ocppServer := &http.Server{Handler: ocppHandler, ReadHeaderTimeout: 5 * time.Second}
 	grpcServer := newGRPCServer(ingestor, metrics)
 	pprofServer := newPprofServer()
@@ -138,8 +155,22 @@ func newRuntime(config Config) (_ *runtime, runErr error) {
 	}, nil
 }
 
-func newHTTPServer(ingestor *application.IngestTelemetry, metrics *observability.Metrics, db *sql.DB, ocpi http.Handler) *http.Server {
+func newHTTPServer(ingestor *application.IngestTelemetry, metrics *observability.Metrics, db *sql.DB, ocpi http.Handler, ready func(context.Context) error) *http.Server {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := ready(ctx); err != nil {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
+	})
 	mux.Handle("/telemetry", httpapi.NewHandler(ingestor, metrics))
 	mux.Handle("/ocpi/", ocpi)
 	mux.Handle("/metrics", metrics.Handler(func() (open, inUse, idle int) {
@@ -152,5 +183,9 @@ func newHTTPServer(ingestor *application.IngestTelemetry, metrics *observability
 func newGRPCServer(ingestor *application.IngestTelemetry, metrics *observability.Metrics) *grpc.Server {
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(1 << 20))
 	pb.RegisterIngestionServiceServer(server, grpcapi.NewServer(ingestor, metrics))
+	healthServer := health.NewServer()
+	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+	healthServer.SetServingStatus("ingestion.IngestionService", grpc_health_v1.HealthCheckResponse_SERVING)
+	grpc_health_v1.RegisterHealthServer(server, healthServer)
 	return server
 }

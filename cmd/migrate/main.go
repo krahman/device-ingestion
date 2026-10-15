@@ -8,13 +8,23 @@ import (
 
 	"device-ingestion/app"
 	"device-ingestion/internal/adapters/persistence/postgres"
+	"net/url"
+	"os"
+	"strings"
 )
 
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	db, err := postgres.Open(app.DatabaseURLFromEnv(), 1)
+	dsn := app.DatabaseURLFromEnv()
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("DATABASE_TLS_VERIFY")), "true") {
+		parsed, parseErr := url.Parse(dsn)
+		if parseErr != nil || parsed.Query().Get("sslmode") != "verify-full" {
+			log.Fatal("DATABASE_URL must use sslmode=verify-full when DATABASE_TLS_VERIFY is enabled")
+		}
+	}
+	db, err := postgres.Open(dsn, 1)
 	if err != nil {
 		log.Fatal(err)
 	}
