@@ -10,7 +10,10 @@ image:
 
 serviceAccount:
   name: device-ingestion
-  roleArn: REPLACE_WITH_APPLICATION_ROLE_ARN
+  roleArn: ""
+
+awsSecrets:
+  enabled: true
 
 service:
   type: ClusterIP
@@ -28,12 +31,15 @@ database:
   port: 5432
   name: device_ingestion
   secretArn: REPLACE_WITH_RDS_SECRET_ARN
+  tlsVerify: true
 
 kafka:
   brokers: REPLACE_WITH_MSK_BROKERS
   secretArn: REPLACE_WITH_MSK_SCRAM_SECRET_ARN
   topicReplicationFactor: 2
   workers: 2
+  tls: true
+  saslMechanism: SCRAM-SHA-512
 
 secrets:
   ocppStationsArn: REPLACE_WITH_OCPP_STATIONS_SECRET_ARN
@@ -53,6 +59,12 @@ ingress:
   idleTimeoutSeconds: 600
   deregistrationDelaySeconds: 60
 
+smoke:
+  apiUrl: ""
+  ocppUrl: ""
+  grpcTarget: ""
+  grpcTls: true
+
 ocpp:
   enabled: true
 
@@ -61,3 +73,5 @@ terminationGracePeriodSeconds: 80
 jobs:
   enabled: false
   runId: manual
+  smoke:
+    enabled: true

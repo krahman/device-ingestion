@@ -196,6 +196,31 @@ Kafka is available to host tools at `localhost:9092`, PostgreSQL at
 `localhost:5432`, HTTP/OCPI at `localhost:8080`, OCPP at `localhost:8081`, and
 gRPC at `localhost:50051`.
 
+## Health-only sandbox profile
+
+For a Kubernetes exercise that does not provision Kafka or PostgreSQL, start
+the service with `APP_PROFILE=sandbox`. This profile starts only the HTTP and
+gRPC listeners. `/health/live` and `/health/ready` report process health;
+`/health/dependencies` returns HTTP 503 because Kafka and PostgreSQL are
+disabled. Data ingestion, OCPI, metrics, and other HTTP operations return HTTP
+503, and ingestion gRPC calls return `Unavailable`. The profile never reports
+an ingestion request as accepted or persisted. The default `full` profile
+continues to require Kafka and PostgreSQL.
+
+## Container validation
+
+GitHub Actions builds the image for `linux/amd64`, labels it with the source
+commit, verifies the non-root image user, and starts it in sandbox mode for
+health and unavailable-route checks. Trivy scans the built image and CI fails
+for fixable HIGH or CRITICAL vulnerabilities. A CycloneDX SBOM is uploaded as a
+workflow artifact and retained for seven days. This validation job does not use
+AWS credentials or publish to the sandbox ECR repository. Pushes and pull
+requests run CI validation only; neither trigger AWS access, image publishing,
+or Kubernetes deployment. Staging deployment is a separate manual workflow
+and requires selecting its explicit AWS deployment confirmation input. CI uses
+GitHub-hosted runner time and artifact storage, which may count toward the
+repository's GitHub Actions quota or billing; it makes no AWS resource calls.
+
 View service status and logs:
 
 ```sh
@@ -233,14 +258,46 @@ build does not need to download Go modules. Use `make run`, `make kafka-up`,
 `make kafka-topics`, `make postgres-up`, and `make migrate` only when you want to
 run the app directly on the host instead of using Compose.
 
+## Deploy to Kubernetes with Minikube
+
+The Minikube profile deploys the same Helm chart used for the AWS pilot, with
+local Kafka and PostgreSQL dependencies, Kubernetes Secrets, and no AWS
+ingress. It runs Kafka topic initialization, database migrations, and the
+protocol/persistence smoke checks inside the cluster.
+
+Requirements: Docker Desktop (running), Minikube, kubectl, and Helm 3. Create
+the local credentials file once, then start the profile:
+
+```sh
+cp deploy/kubernetes/minikube/credentials.env.example \
+  deploy/kubernetes/minikube/credentials.env
+make minikube-up
+```
+
+When the script reports success, access the HTTP, OCPP, and gRPC services from
+your host with:
+
+```sh
+kubectl --context device-ingestion -n device-ingestion-staging \
+  port-forward svc/device-ingestion 8080:8080 8081:8081 50051:50051
+```
+
+The endpoints are `http://localhost:8080`,
+`ws://localhost:8081/ocpp/<station-id>`, and `localhost:50051` (plaintext
+gRPC). Stop the cluster with `make minikube-down`. See
+[`docs/minikube-deployment.md`](docs/minikube-deployment.md) for troubleshooting
+and detailed commands.
+
 ## Deploy to AWS staging
 
 The repository includes Terraform infrastructure and a GitHub Actions OIDC
-deployment workflow for an isolated AWS EKS staging pilot. The deployment
-covers HTTP/OCPI, OCPP WebSockets, and gRPC, backed by private MSK and RDS
-PostgreSQL. See [the AWS EKS staging guide](docs/aws-staging-deployment.md) for
-cluster add-ons, prerequisites, secret setup, Terraform commands, GitHub
-environment configuration, smoke checks, rollback, and teardown.
+workflow for an isolated AWS EKS staging pilot. Pushes do not deploy. Staging
+deployment requires manual dispatch with an explicit confirmation because it
+uses AWS and may incur charges. The deployment covers HTTP/OCPI, OCPP
+WebSockets, and gRPC, backed by private MSK and RDS PostgreSQL. See
+[the AWS EKS staging guide](docs/aws-staging-deployment.md) for cluster
+add-ons, prerequisites, secret setup, Terraform commands, GitHub environment
+configuration, smoke checks, rollback, and teardown.
 
 Set `KAFKA_DB_WORKERS` to control the number of consumer group members. It must
 be between 1 and 32, and should not exceed the input topic partition count for

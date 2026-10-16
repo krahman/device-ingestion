@@ -8,7 +8,7 @@ POSTGRES_IMAGE ?= postgres:17-alpine
 RECONCILE_WORKERS ?= 2
 RECONCILE_CHARGING ?= false
 
-.PHONY: help install-tools install-protoc-macos generate tidy vendor build run compose-up compose-down kafka-up kafka-down kafka-topics postgres-up postgres-down migrate reconcile fmt
+.PHONY: help install-tools install-protoc-macos generate tidy vendor build run compose-up compose-down kafka-up kafka-down kafka-topics postgres-up postgres-down migrate reconcile minikube-up minikube-down fmt
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -68,6 +68,12 @@ migrate: ## Apply PostgreSQL schema migrations
 
 reconcile: ## Replay retained Kafka telemetry or charging events into PostgreSQL
 	$(GO) run -mod=vendor ./cmd/reconcile -workers=$(RECONCILE_WORKERS) -charging=$(RECONCILE_CHARGING)
+
+minikube-up: ## Deploy the Kubernetes chart and run protocol/persistence smoke checks in Minikube
+	./scripts/minikube-up.sh
+
+minikube-down: ## Stop the local device-ingestion Minikube profile
+	./scripts/minikube-down.sh
 
 fmt: ## Format project Go source files
 	find app cmd internal proto -name '*.go' -print0 | xargs -0 gofmt -w

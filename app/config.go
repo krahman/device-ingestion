@@ -16,6 +16,7 @@ import (
 )
 
 type Config struct {
+	Profile            string
 	KafkaBrokers       []string
 	KafkaSecurity      kafkaadapter.SecurityConfig
 	KafkaWorkers       int
@@ -36,6 +37,11 @@ type Config struct {
 	ShutdownLimit      time.Duration
 }
 
+const (
+	ProfileFull    = "full"
+	ProfileSandbox = "sandbox"
+)
+
 type OCPPStationConfig struct {
 	domain.ChargingStation
 	Password string `json:"password"`
@@ -48,6 +54,19 @@ type OCPIEMSPPartner struct {
 }
 
 func ConfigFromEnv() (Config, error) {
+	profile := env("APP_PROFILE", ProfileFull)
+	if profile == ProfileSandbox {
+		return Config{
+			Profile:       ProfileSandbox,
+			HTTPAddress:   env("HTTP_ADDRESS", ":8080"),
+			GRPCAddress:   env("GRPC_ADDRESS", ":50051"),
+			ShutdownLimit: 10 * time.Second,
+		}, nil
+	}
+	if profile != ProfileFull {
+		return Config{}, fmt.Errorf("APP_PROFILE must be %q or %q", ProfileFull, ProfileSandbox)
+	}
+
 	kafkaTLS, err := boolEnv("KAFKA_TLS", false)
 	if err != nil {
 		return Config{}, err
@@ -167,6 +186,7 @@ func ConfigFromEnv() (Config, error) {
 	}
 
 	return Config{
+		Profile:            ProfileFull,
 		KafkaBrokers:       strings.Split(env("KAFKA_BROKERS", "localhost:9092"), ","),
 		KafkaSecurity:      kafkaSecurity,
 		KafkaWorkers:       workers,

@@ -1,0 +1,10 @@
+.terraform/
+state/*
+!state/.gitkeep
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+*.tfvars
+!*.tfvars.example
+crash.log

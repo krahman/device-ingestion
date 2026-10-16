@@ -32,8 +32,12 @@ func (r *runtime) Run(ctx context.Context) error {
 	// Worker cancellation is controlled by the shutdown sequence below so a
 	// signal can stop ingress before canceling in-flight Kafka processing.
 	workerCtx, cancelWorkers := context.WithCancel(context.Background())
-	r.workers.Start(workerCtx)
-	r.chargingWorkers.Start(workerCtx)
+	if r.workers != nil {
+		r.workers.Start(workerCtx)
+	}
+	if r.chargingWorkers != nil {
+		r.chargingWorkers.Start(workerCtx)
+	}
 	defer cancelWorkers()
 
 	serveErrors := make(chan error, len(r.services))
@@ -61,20 +65,30 @@ func (r *runtime) Run(ctx context.Context) error {
 		}
 	}
 
-	if err := r.workers.Shutdown(shutdownCtx); err != nil {
-		runErr = errors.Join(runErr, fmt.Errorf("stop Kafka workers: %w", err))
+	if r.workers != nil {
+		if err := r.workers.Shutdown(shutdownCtx); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("stop Kafka workers: %w", err))
+		}
 	}
-	if err := r.chargingWorkers.Shutdown(shutdownCtx); err != nil {
-		runErr = errors.Join(runErr, fmt.Errorf("stop charging event Kafka workers: %w", err))
+	if r.chargingWorkers != nil {
+		if err := r.chargingWorkers.Shutdown(shutdownCtx); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("stop charging event Kafka workers: %w", err))
+		}
 	}
-	if err := r.publisher.Close(); err != nil {
-		runErr = errors.Join(runErr, fmt.Errorf("close Kafka publisher: %w", err))
+	if r.publisher != nil {
+		if err := r.publisher.Close(); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("close Kafka publisher: %w", err))
+		}
 	}
-	if err := r.chargingPublisher.Close(); err != nil {
-		runErr = errors.Join(runErr, fmt.Errorf("close charging event Kafka publisher: %w", err))
+	if r.chargingPublisher != nil {
+		if err := r.chargingPublisher.Close(); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("close charging event Kafka publisher: %w", err))
+		}
 	}
-	if err := r.db.Close(); err != nil {
-		runErr = errors.Join(runErr, fmt.Errorf("close PostgreSQL connection pool: %w", err))
+	if r.db != nil {
+		if err := r.db.Close(); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("close PostgreSQL connection pool: %w", err))
+		}
 	}
 	return runErr
 }

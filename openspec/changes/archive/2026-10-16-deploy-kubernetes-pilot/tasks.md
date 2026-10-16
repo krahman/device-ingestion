@@ -23,6 +23,8 @@
 
 - [x] 4.1 Document cluster prerequisites, Terraform setup, secrets, deployment, smoke checks, rollback, cost considerations, and teardown.
 - [x] 4.2 Validate Terraform formatting/configuration, chart lint/rendering, and GitHub workflow YAML without applying cloud resources.
-- [ ] 4.3 Run local Kubernetes validation where available and verify all application protocols and dependency paths in the authorized AWS pilot cluster.
+- [x] 4.3 Run local Kubernetes validation in Minikube and verify all application protocols and dependency paths.
+- [x] 4.4 Add a Minikube profile using the application Helm chart, local Kafka and PostgreSQL, local Kubernetes secrets, and the existing protocol/persistence smoke checks.
+- [ ] 4.5 Verify the deployment in the authorized AWS pilot cluster.
 
-Task 4.3 is pending: the local `kind` cluster could not start because the Docker daemon is not running, and this workspace has no authorized AWS staging account or credentials.
+Task 4.5 remains pending because this workspace has no authorized AWS staging account or credentials.

@@ -33,6 +33,12 @@ type service struct {
 
 // newRuntime wires adapters and transfers their resource ownership to runtime.
 func newRuntime(config Config) (_ *runtime, runErr error) {
+	if config.Profile == ProfileSandbox {
+		return newSandboxRuntime(config)
+	}
+	if config.Profile != "" && config.Profile != ProfileFull {
+		return nil, fmt.Errorf("unsupported application profile %q", config.Profile)
+	}
 	var cleanup []func() error
 	defer func() {
 		if runErr != nil {
@@ -133,7 +139,7 @@ func newRuntime(config Config) (_ *runtime, runErr error) {
 		return kafkaadapter.CheckBrokers(ctx, config.KafkaBrokers, config.KafkaSecurity)
 	})
 	ocppServer := &http.Server{Handler: ocppHandler, ReadHeaderTimeout: 5 * time.Second}
-	grpcServer := newGRPCServer(ingestor, metrics)
+	grpcServer := newGRPCServer(ingestor, metrics, false)
 	pprofServer := newPprofServer()
 
 	services := []service{
@@ -162,14 +168,10 @@ func newHTTPServer(ingestor *application.IngestTelemetry, metrics *observability
 		_, _ = w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		if err := ready(ctx); err != nil {
-			http.Error(w, "not ready", http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ready"))
+		writeDependencyHealth(w, r, ready, "ready", "not ready")
+	})
+	mux.HandleFunc("GET /health/dependencies", func(w http.ResponseWriter, r *http.Request) {
+		writeDependencyHealth(w, r, ready, "dependencies ready", "dependencies unavailable")
 	})
 	mux.Handle("/telemetry", httpapi.NewHandler(ingestor, metrics))
 	mux.Handle("/ocpi/", ocpi)
@@ -180,12 +182,102 @@ func newHTTPServer(ingestor *application.IngestTelemetry, metrics *observability
 	return &http.Server{Handler: mux, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second}
 }
 
-func newGRPCServer(ingestor *application.IngestTelemetry, metrics *observability.Metrics) *grpc.Server {
+func newSandboxRuntime(config Config) (_ *runtime, runErr error) {
+	if config.HTTPAddress == "" {
+		config.HTTPAddress = ":8080"
+	}
+	if config.GRPCAddress == "" {
+		config.GRPCAddress = ":50051"
+	}
+	if config.ShutdownLimit <= 0 {
+		config.ShutdownLimit = 10 * time.Second
+	}
+
+	var cleanup []func() error
+	defer func() {
+		if runErr != nil {
+			runErr = errors.Join(append([]error{runErr}, closeReverse(cleanup)...)...)
+		}
+	}()
+	listen := func(name, address string) (net.Listener, error) {
+		listener, err := net.Listen("tcp", address)
+		if err != nil {
+			return nil, fmt.Errorf("listen for %s on %s: %w", name, address, err)
+		}
+		cleanup = append(cleanup, listener.Close)
+		return listener, nil
+	}
+
+	httpListener, err := listen("HTTP", config.HTTPAddress)
+	if err != nil {
+		return nil, err
+	}
+	grpcListener, err := listen("gRPC", config.GRPCAddress)
+	if err != nil {
+		return nil, err
+	}
+	metrics := observability.NewMetrics()
+	httpServer := newSandboxHTTPServer()
+	grpcServer := newGRPCServer(nil, metrics, true)
+	services := []service{
+		{name: "HTTP", address: config.HTTPAddress, serve: func() error { return httpServer.Serve(httpListener) }, shutdown: httpServer.Shutdown},
+		{name: "gRPC", address: config.GRPCAddress, serve: func() error { return grpcServer.Serve(grpcListener) }, shutdown: func(ctx context.Context) error { return stopGRPC(ctx, grpcServer) }},
+	}
+	return &runtime{config: config, services: services}, nil
+}
+
+func newSandboxHTTPServer() *http.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready: sandbox health-only profile"))
+	})
+	mux.HandleFunc("GET /health/dependencies", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "PostgreSQL and Kafka are disabled in sandbox profile", http.StatusServiceUnavailable)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "operation unavailable in sandbox profile", http.StatusServiceUnavailable)
+	})
+	return &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+}
+
+func writeDependencyHealth(w http.ResponseWriter, r *http.Request, ready func(context.Context) error, success, failure string) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := ready(ctx); err != nil {
+		http.Error(w, failure, http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(success))
+}
+
+func newGRPCServer(ingestor *application.IngestTelemetry, metrics *observability.Metrics, sandbox bool) *grpc.Server {
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(1 << 20))
-	pb.RegisterIngestionServiceServer(server, grpcapi.NewServer(ingestor, metrics))
+	var ingestionServer *grpcapi.Server
+	if sandbox {
+		ingestionServer = grpcapi.NewUnavailableServer(metrics)
+	} else {
+		ingestionServer = grpcapi.NewServer(ingestor, metrics)
+	}
+	pb.RegisterIngestionServiceServer(server, ingestionServer)
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
-	healthServer.SetServingStatus("ingestion.IngestionService", grpc_health_v1.HealthCheckResponse_SERVING)
+	if sandbox {
+		healthServer.SetServingStatus("ingestion.IngestionService", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
+	} else {
+		healthServer.SetServingStatus("ingestion.IngestionService", grpc_health_v1.HealthCheckResponse_SERVING)
+	}
 	grpc_health_v1.RegisterHealthServer(server, healthServer)
 	return server
 }

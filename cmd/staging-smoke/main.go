@@ -24,6 +24,7 @@ import (
 	"github.com/gorilla/websocket"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func main() {
@@ -131,7 +132,11 @@ func checkHTTPIngestion(ctx context.Context, baseURL string, db interface {
 func checkGRPCIngestion(ctx context.Context, target string, db interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, key string) error {
-	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})))
+	transportCredentials := grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}))
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("STAGING_GRPC_TLS")), "false") {
+		transportCredentials = grpc.WithTransportCredentials(insecure.NewCredentials())
+	}
+	conn, err := grpc.NewClient(target, transportCredentials)
 	if err != nil {
 		return fmt.Errorf("create gRPC connection: %w", err)
 	}
@@ -182,13 +187,13 @@ func checkOCPP(ctx context.Context, baseURL string, station app.OCPPStationConfi
 	if connectorID == 0 {
 		return fmt.Errorf("staging smoke station must have at least one connector")
 	}
-	statusKey := "staging-smoke-status-" + key
+	statusKey := "status-" + key
 	statusTime := time.Now().UTC()
 	if err := ocppCall(ctx, conn, statusKey, "StatusNotification", map[string]any{"connectorId": connectorID, "errorCode": "NoError", "status": "Available", "timestamp": statusTime.Format(time.RFC3339Nano)}); err != nil {
 		return err
 	}
 	meterTime := time.Now().UTC()
-	if err := ocppCall(ctx, conn, "smoke-meter-"+key, "MeterValues", map[string]any{"connectorId": connectorID, "meterValue": []any{map[string]any{"timestamp": meterTime.Format(time.RFC3339Nano), "sampledValue": []any{map[string]string{"value": "12345", "measurand": "Energy.Active.Import.Register", "unit": "Wh"}}}}}); err != nil {
+	if err := ocppCall(ctx, conn, "meter-"+key, "MeterValues", map[string]any{"connectorId": connectorID, "meterValue": []any{map[string]any{"timestamp": meterTime.Format(time.RFC3339Nano), "sampledValue": []any{map[string]string{"value": "12345", "measurand": "Energy.Active.Import.Register", "unit": "Wh"}}}}}); err != nil {
 		return err
 	}
 	if err := waitFor(ctx, func() (bool, error) {

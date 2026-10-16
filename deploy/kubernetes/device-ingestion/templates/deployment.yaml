@@ -84,10 +84,13 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          {{- if .Values.awsSecrets.enabled }}
           volumeMounts:
             - name: secrets-store
               mountPath: /mnt/secrets-store
               readOnly: true
+          {{- end }}
+      {{- if .Values.awsSecrets.enabled }}
       volumes:
         - name: secrets-store
           csi:
@@ -95,3 +98,4 @@ spec:
             readOnly: true
             volumeAttributes:
               secretProviderClass: {{ .Release.Name }}-secrets
+      {{- end }}

@@ -1,0 +1,64 @@
+namespace: device-ingestion-staging
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+image:
+  repository: device-ingestion
+  tag: local
+  pullPolicy: Never
+
+serviceAccount:
+  name: device-ingestion
+  roleArn: ""
+
+awsSecrets:
+  enabled: false
+
+database:
+  host: device-ingestion-postgres
+  port: 5432
+  name: device_ingestion
+  secretArn: ""
+  tlsVerify: false
+
+kafka:
+  brokers: device-ingestion-kafka:9092
+  secretArn: ""
+  topicReplicationFactor: 1
+  workers: 2
+  tls: false
+  saslMechanism: ""
+
+secrets:
+  ocppStationsArn: ""
+  ocpiPartnersArn: ""
+
+ocpi:
+  countryCode: ID
+  partyId: ABC
+  baseUrl: http://device-ingestion:8080
+
+ingress:
+  enabled: false
+  baseDomain: local.test
+
+smoke:
+  apiUrl: http://device-ingestion:8080
+  ocppUrl: ws://device-ingestion:8081/ocpp
+  grpcTarget: device-ingestion:50051
+  grpcTls: false
+
+ocpp:
+  enabled: true
+
+jobs:
+  enabled: true
+  runId: minikube
+  smoke:
+    enabled: false

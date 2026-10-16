@@ -1,5 +1,9 @@
-## ADDED Requirements
+# kubernetes-deployment Specification
 
+## Purpose
+Define the service's Kubernetes deployment, operations, and local validation requirements.
+
+## Requirements
 ### Requirement: Run the service as a Kubernetes workload
 The staging platform SHALL run the existing device-ingestion server image as a Kubernetes Deployment with explicit resource requests and limits, a dedicated service account, and configurable immutable image reference.
 
@@ -69,3 +73,10 @@ The repository SHALL provide an automated deployment workflow that authenticates
 #### Scenario: Verify the released service
 - **WHEN** the Kubernetes rollout becomes ready
 - **THEN** the workflow verifies HTTP, gRPC, OCPP, OCPI, Kafka delivery, and PostgreSQL persistence and fails if any required check fails
+
+### Requirement: Validate the application chart locally
+The repository SHALL provide a Minikube profile that deploys the application Helm chart with local Kafka and PostgreSQL dependencies and runs the protocol and persistence smoke checks without AWS integrations.
+
+#### Scenario: Run the local Kubernetes pilot
+- **WHEN** an operator starts the documented Minikube profile
+- **THEN** the chart deploys with local credentials and dependencies, runs topic initialization and migrations, and passes HTTP, gRPC, OCPP, OCPI, Kafka, and PostgreSQL smoke checks

@@ -27,6 +27,7 @@ go.work.sum
 
 # env file
 .env
+deploy/kubernetes/minikube/credentials.env
 
 # Editor/IDE
 .idea/

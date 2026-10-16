@@ -139,9 +139,12 @@ EKS access policy is scoped to this namespace and cannot create it.
 
 ## Configure GitHub Actions
 
-Create the protected `staging` environment and add `AWS_DEPLOY_ROLE_ARN` as an
-environment secret. Add these environment variables using Terraform outputs
-and the selected staging inputs:
+Create a GitHub environment named `staging` and add `AWS_DEPLOY_ROLE_ARN` as an
+environment secret. Configure the environment's deployment branch policy to
+allow `main`; optionally require reviewer approval for deployments. These are
+GitHub repository settings and are not provisioned by Terraform or the
+workflow. Add the environment variables below using Terraform outputs and the
+selected staging inputs:
 
 | Name | Value |
 | --- | --- |
@@ -166,15 +169,36 @@ The workflow assumes the AWS role through GitHub OIDC, pushes a commit-tagged
 immutable image to ECR, and uses the EKS access entry scoped to the staging
 namespace. It does not fetch secret contents into the GitHub runner.
 
+Pull requests run `.github/workflows/ci.yml`, which checks Go formatting, tests
+and build, Terraform formatting and validation, and Helm lint/rendering. The
+pull-request run has no AWS OIDC permission and does not publish an image or
+access EKS. Configure repository branch protection or a ruleset to require the
+`CI / validate` check before merging to `main`. The workflow defines the check;
+it does not configure branch protection.
+
+Pushes and pull requests run CI validation only. They do not assume an AWS
+role, publish an image, or access EKS. Staging deployment is manual through
+`workflow_dispatch`; the operator must select the `confirm_staging_deploy`
+input, which defaults to false. With the default, all jobs are skipped. When
+confirmed, the workflow runs CI first and then the deploy job receives
+`id-token: write` only at the deploy-job level and uses the `staging`
+environment.
+Configure deployment branch restrictions and any required reviewers in
+GitHub's environment settings; they are independent of Terraform and must be
+verified by a repository administrator.
+
 ## Deploy and verify
 
-A push to `main` or manual workflow dispatch validates the Go code, Terraform,
-and Helm chart, then builds and publishes the image. Deployment applies the
+A pull request or push to `main` runs CI validation only. A confirmed manual
+workflow dispatch runs the same CI validation; staging deployment proceeds
+only if the operator explicitly selects `confirm_staging_deploy`. Deployment applies the
 namespace workload configuration and `SecretProviderClass`, runs Kafka topic
 initialization and database migration Jobs sequentially, upgrades the Helm
 release only after both Jobs complete, waits for the Kubernetes Deployment to
 be ready, and runs protocol and persistence smoke checks from a pod in the
-cluster.
+cluster. Rollout and smoke failures collect bounded Deployment/Job and Pod
+status, selected Pod descriptions and logs, and recent namespace events. The
+diagnostic steps do not dump Kubernetes Secret objects or environment values.
 
 After the Ingress resources become ready, inspect the ALB hostname and create
 DNS records for all three names:

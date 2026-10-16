@@ -1,0 +1,6 @@
+# Copy to sandbox.auto.tfvars and replace every placeholder before planning.
+# Use exact GitHub owner/repository and IAM ARNs from the target AWS account.
+allowed_operator_cidrs     = ["REPLACE_WITH_WORKSTATION_PUBLIC_IPV4/32"]
+operator_iam_principal_arn = "arn:aws:iam::123456789012:role/REPLACE_WITH_OPERATOR_ROLE"
+github_repository          = "REPLACE_WITH_OWNER/REPLACE_WITH_REPOSITORY"
+github_oidc_provider_arn   = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"

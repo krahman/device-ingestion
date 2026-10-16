@@ -19,12 +19,17 @@ type telemetryIngestor interface {
 
 type Server struct {
 	pb.UnimplementedIngestionServiceServer
-	ingestor telemetryIngestor
-	metrics  *observability.Metrics
+	ingestor  telemetryIngestor
+	metrics   *observability.Metrics
+	available bool
 }
 
 func NewServer(ingestor telemetryIngestor, metrics *observability.Metrics) *Server {
-	return &Server{ingestor: ingestor, metrics: metrics}
+	return &Server{ingestor: ingestor, metrics: metrics, available: true}
+}
+
+func NewUnavailableServer(metrics *observability.Metrics) *Server {
+	return &Server{metrics: metrics}
 }
 
 func (s *Server) IngestTelemetry(ctx context.Context, req *pb.TelemetryRequest) (response *pb.TelemetryResponse, retErr error) {
@@ -34,6 +39,10 @@ func (s *Server) IngestTelemetry(ctx context.Context, req *pb.TelemetryRequest) 
 		s.metrics.AddCounter("device_ingestion_requests_total", map[string]string{"protocol": "grpc", "result": result}, 1)
 		s.metrics.Observe("device_ingestion_request_duration_seconds", map[string]string{"protocol": "grpc"}, time.Since(started))
 	}()
+	if !s.available {
+		result = "unavailable"
+		return nil, status.Error(codes.Unavailable, "ingestion is unavailable in sandbox profile")
+	}
 	if req == nil {
 		result = "rejected"
 		return nil, status.Error(codes.InvalidArgument, "telemetry request is required")

@@ -1,0 +1,3 @@
+# golang-production-readiness
+
+Plan a personal AWS EKS learning exercise in `ap-southeast-1`, not an enterprise production platform. The initial scope is an isolated Terraform sandbox at `infra/terraform/sandbox/`, one capacity-validated managed worker node, ECR publishing through GitHub Actions/OIDC, and manual workstation deployment of a dependency-free Go service profile using `kubectl` and `kubectl port-forward`. No Kafka, PostgreSQL, NAT Gateway, ALB, WAF, public app ports, CloudWatch, or automated EKS CD are included initially. Every AWS apply requires a current cost estimate and explicit approval; teardown and resource verification are required.

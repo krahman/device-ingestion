@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check Go formatting
+        run: test -z "$(gofmt -l $(find app cmd internal proto -name '*.go'))"
+      - name: Test Go packages
+        run: go test -mod=vendor ./...
+      - name: Build Go packages
+        run: go build -mod=vendor ./...
+      - name: Run Go static analysis
+        run: go vet -mod=vendor ./...
+      - name: Run race-enabled tests
+        run: go test -race -mod=vendor ./...
+      - name: Build sandbox image for linux/amd64
+        env:
+          IMAGE_TAG: device-ingestion:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker buildx build --pull --platform linux/amd64 --load \
+            --build-arg OCI_VERSION="$GITHUB_SHA" \
+            --build-arg OCI_REVISION="$GITHUB_SHA" \
+            --tag "$IMAGE_TAG" .
+          test "$(docker image inspect --format '{{.Config.User}}' "$IMAGE_TAG")" = "10001:10001"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE_TAG")" = "$GITHUB_SHA"
+      - name: Smoke-test sandbox container
+        env:
+          IMAGE_TAG: device-ingestion:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker run --detach --name device-ingestion-sandbox-ci \
+            --env APP_PROFILE=sandbox \
+            --publish 127.0.0.1:18080:8080 \
+            --publish 127.0.0.1:15051:50051 \
+            "$IMAGE_TAG"
+          trap 'docker rm --force device-ingestion-sandbox-ci >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent http://127.0.0.1:18080/health/live >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:18080/health/live
+          curl --fail --silent http://127.0.0.1:18080/health/ready
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST http://127.0.0.1:18080/telemetry)" = "503"
+      - name: Generate SBOM and scan image with Trivy
+        env:
+          IMAGE_TAG: device-ingestion:${{ github.sha }}
+          TRIVY_IMAGE: aquasec/trivy:0.74.0
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/trivy-cache"
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$RUNNER_TEMP/trivy-cache:/root/.cache/" \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            "$TRIVY_IMAGE" image --format cyclonedx \
+            --output /workspace/sbom.cdx.json "$IMAGE_TAG"
+          test -s sbom.cdx.json
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$RUNNER_TEMP/trivy-cache:/root/.cache/" \
+            "$TRIVY_IMAGE" image --scanners vuln \
+            --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$IMAGE_TAG"
+      - name: Upload image SBOM
+        if: always() && hashFiles('sbom.cdx.json') != ''
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: image-sbom-${{ github.sha }}
+          path: sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 7
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.9.8
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive deploy/aws/staging
+      - name: Check sandbox Terraform formatting
+        run: terraform fmt -check -recursive infra/terraform/sandbox
+      - name: Validate Terraform
+        working-directory: deploy/aws/staging
+        run: terraform init -backend=false -input=false && terraform validate -no-color
+      - name: Validate sandbox Terraform
+        working-directory: infra/terraform/sandbox
+        run: terraform init -backend=false -input=false && terraform validate -no-color
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.4
+      - name: Lint Kubernetes chart
+        run: helm lint deploy/kubernetes/device-ingestion
+      - name: Render Kubernetes chart
+        run: helm template device-ingestion deploy/kubernetes/device-ingestion --namespace device-ingestion-staging >/dev/null

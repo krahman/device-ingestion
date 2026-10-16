@@ -14,20 +14,23 @@ data:
   GRPC_ADDRESS: ":50051"
   PPROF_ADDRESS: "127.0.0.1:6060"
   KAFKA_BROKERS: {{ .Values.kafka.brokers | quote }}
-  KAFKA_TLS: "true"
-  KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  KAFKA_TLS: {{ .Values.kafka.tls | quote }}
+  KAFKA_SASL_MECHANISM: {{ .Values.kafka.saslMechanism | quote }}
   KAFKA_TOPIC_REPLICATION_FACTOR: {{ .Values.kafka.topicReplicationFactor | quote }}
   KAFKA_DB_WORKERS: {{ .Values.kafka.workers | quote }}
   DB_MAX_OPEN_CONNS: {{ .Values.kafka.workers | quote }}
   DATABASE_HOST: {{ .Values.database.host | quote }}
   DATABASE_PORT: {{ .Values.database.port | quote }}
   DATABASE_NAME: {{ .Values.database.name | quote }}
-  DATABASE_SSLMODE: verify-full
+  DATABASE_SSLMODE: {{ ternary "verify-full" "disable" .Values.database.tlsVerify | quote }}
+  {{- if .Values.database.tlsVerify }}
   DATABASE_SSLROOTCERT: /etc/ssl/cert.pem
-  DATABASE_TLS_VERIFY: "true"
+  {{- end }}
+  DATABASE_TLS_VERIFY: {{ .Values.database.tlsVerify | quote }}
   OCPI_CPO_COUNTRY_CODE: {{ .Values.ocpi.countryCode | quote }}
   OCPI_CPO_PARTY_ID: {{ .Values.ocpi.partyId | quote }}
   OCPI_BASE_URL: {{ .Values.ocpi.baseUrl | quote }}
-  STAGING_API_URL: {{ printf "https://api.%s" .Values.ingress.baseDomain | quote }}
-  STAGING_OCPP_URL: {{ printf "wss://ocpp.%s/ocpp" .Values.ingress.baseDomain | quote }}
-  STAGING_GRPC_TARGET: {{ printf "grpc.%s:443" .Values.ingress.baseDomain | quote }}
+  STAGING_API_URL: {{ default (printf "https://api.%s" .Values.ingress.baseDomain) .Values.smoke.apiUrl | quote }}
+  STAGING_OCPP_URL: {{ default (printf "wss://ocpp.%s/ocpp" .Values.ingress.baseDomain) .Values.smoke.ocppUrl | quote }}
+  STAGING_GRPC_TARGET: {{ default (printf "grpc.%s:443" .Values.ingress.baseDomain) .Values.smoke.grpcTarget | quote }}
+  STAGING_GRPC_TLS: {{ .Values.smoke.grpcTls | quote }}
