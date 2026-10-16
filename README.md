@@ -54,6 +54,9 @@ The project follows ports and adapters (Hexagonal Architecture):
   application, and manages server startup and shutdown.
 - `cmd/server` loads configuration and starts the app.
 
+For the complete stack from Go packages through Kubernetes and AWS, see
+[`docs/service-stack.md`](docs/service-stack.md).
+
 Dependencies point inward: adapters depend on application and domain packages;
 the domain has no dependencies on transports, Kafka, or persistence.
 
@@ -410,8 +413,8 @@ configured OCPP station. The endpoint requires Basic authentication and the
 `ocpp1.6` WebSocket subprotocol:
 
 ```sh
-AUTH=$(printf '%s' 'charger-001:local-test-password' | base64 | tr -d '\n')
-wscat -c ws://localhost:8081/ocpp/charger-001 \
+AUTH=$(printf '%s' 'charger-local-001:local-test-password' | base64 | tr -d '\n')
+wscat -c ws://localhost:8081/ocpp/charger-local-001 \
   -s ocpp1.6 \
   -H "Authorization: Basic $AUTH"
 ```
